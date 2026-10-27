@@ -53,6 +53,7 @@ internal static class Native
     public const uint CDS_UPDATEREGISTRY = 0x1;
     public const uint CDS_NORESET = 0x10000000;
     public const int DISP_CHANGE_SUCCESSFUL = 0;
+    public const int DISP_CHANGE_BADMODE = -2;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     public struct DISPLAY_DEVICE

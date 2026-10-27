@@ -23,9 +23,28 @@ Run `out\VirtualScreenViewer.exe`. It's a plain window showing the virtual displ
 
 - If the virtual display is off when the window opens, it's turned on, and turned off again when you close the window.
 - Right-click the title bar → **Virtual display connected** to connect or disconnect it any time. A disconnected display costs nothing, so there's no need to disable the adapter.
-- The app runs the virtual display at 60 Hz. The driver offers up to 165 Hz, but that costs much more compositor time.
+- Refresh rate and resolution come from the settings file (below). By default it runs the virtual display at 60 Hz and keeps the resolution set in Windows' display settings.
 - The title bar follows Windows' light/dark app setting.
 - Move apps onto the virtual display with Win + Shift + arrow keys, or by dragging them past the right edge of your main screen.
+
+## Settings: refresh rate and resolution
+
+`VirtualScreenViewer.json`, next to the exe (`out\`), is created the first time the app runs. Open it with right-click on the title bar → **Edit settings (refresh rate, resolution)...**, or in any text editor:
+
+```json
+{
+  "refreshRate": 60,
+  "width": 0,
+  "height": 0
+}
+```
+
+- `refreshRate`: Hz for the virtual display, e.g. 30, 60, 90, 120, 144 or 165. `0` leaves it as Windows has it.
+- `width` / `height`: its resolution, e.g. `2560` and `1440`. `0` for both keeps the one set in Windows' display settings.
+
+Changes apply as soon as you save the file (if the virtual display is on), and every time the app opens. Only the modes listed in `C:\VirtualDisplayDriver\vdd_settings.xml` work; anything else shows an error and leaves the display as it was. A mistake in the file (a missing comma, width without height) shows a message and the defaults are used until it's fixed.
+
+Higher refresh rates cost more compositor time. 60 Hz suits OBS at 60 fps; use more only if you stream it at a higher frame rate (for example 120 Hz to Moonlight).
 
 ## Streaming
 

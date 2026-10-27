@@ -12,6 +12,10 @@ public sealed class ViewerForm : Form
     private Screen? _target;
     private Bitmap? _frame;
     private bool _turnedOn; // we switched the virtual display on, so switch it off again on close
+    private ViewerSettings _settings;
+    private string? _startupProblem;
+    private readonly FileSystemWatcher _settingsWatcher;
+    private readonly System.Windows.Forms.Timer _settingsDebounce = new() { Interval = 300 };
 
     public ViewerForm()
     {
@@ -22,15 +26,33 @@ public sealed class ViewerForm : Form
         DoubleBuffered = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
 
+        _settings = ViewerSettings.Load(out var problem);
+        if (problem is not null) _startupProblem = $"{ViewerSettings.FilePath}:\n{problem}";
         if (VirtualDisplay.FindDevice() is { } device)
         {
             try
             {
-                if (!VirtualDisplay.IsOn(device)) { VirtualDisplay.TurnOn(device); _turnedOn = true; }
-                else VirtualDisplay.UseRefreshRate(device);
+                if (!VirtualDisplay.IsOn(device)) { VirtualDisplay.TurnOn(device, _settings); _turnedOn = true; }
+                else VirtualDisplay.UseSettings(device, _settings);
             }
-            catch { }
+            catch (Exception ex) { _startupProblem ??= ex.Message; }
         }
+        Shown += (_, _) => { if (_startupProblem is not null) ShowError(_startupProblem); };
+
+        // Editors save in bursts (truncate, write, rename), so wait for the file to settle.
+        _settingsWatcher = new FileSystemWatcher(AppContext.BaseDirectory, Path.GetFileName(ViewerSettings.FilePath))
+        {
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
+            EnableRaisingEvents = true,
+        };
+        FileSystemEventHandler changed = (_, _) =>
+        {
+            if (IsHandleCreated) BeginInvoke(() => { _settingsDebounce.Stop(); _settingsDebounce.Start(); });
+        };
+        _settingsWatcher.Changed += changed;
+        _settingsWatcher.Created += changed;
+        _settingsWatcher.Renamed += (s, e) => changed(s, e);
+        _settingsDebounce.Tick += (_, _) => { _settingsDebounce.Stop(); ReloadSettings(); };
 
         SystemEvents.DisplaySettingsChanged += OnDisplaysChanged;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
@@ -49,12 +71,14 @@ public sealed class ViewerForm : Form
         var menu = GetSystemMenu(Handle, false);
         AppendMenuW(menu, MF_SEPARATOR, UIntPtr.Zero, null);
         AppendMenuW(menu, MF_STRING, ID_CONNECTED, "Virtual display connected");
+        AppendMenuW(menu, MF_STRING, ID_SETTINGS, "Edit settings (refresh rate, resolution)...");
     }
 
     // ---------- Title bar right-click menu ----------
 
     // System menu command IDs must keep the low four bits clear.
     private const uint ID_CONNECTED = 0x10;
+    private const uint ID_SETTINGS = 0x20;
 
     protected override void WndProc(ref Message m)
     {
@@ -65,7 +89,31 @@ public sealed class ViewerForm : Form
             ToggleConnected();
             return;
         }
+        else if (m.Msg == WM_SYSCOMMAND && ((uint)m.WParam & 0xFFF0) == ID_SETTINGS)
+        {
+            EditSettings();
+            return;
+        }
         base.WndProc(ref m);
+    }
+
+    // ---------- Settings file ----------
+
+    private void EditSettings()
+    {
+        if (!File.Exists(ViewerSettings.FilePath)) ViewerSettings.Load(out _); // writes the defaults
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("notepad.exe", $"\"{ViewerSettings.FilePath}\"")); }
+        catch (Exception ex) { ShowError(ex.Message); }
+    }
+
+    /// <summary>Applies the settings file again after it's saved (if the virtual display is on).</summary>
+    private void ReloadSettings()
+    {
+        _settings = ViewerSettings.Load(out var problem);
+        if (problem is not null) { ShowError($"{ViewerSettings.FilePath}:\n{problem}"); return; }
+        if (VirtualDisplay.FindDevice() is not { } device || !VirtualDisplay.IsOn(device)) return;
+        try { VirtualDisplay.UseSettings(device, _settings); }
+        catch (Exception ex) { ShowError(ex.Message); }
     }
 
     private static void UpdateMenu(IntPtr menu)
@@ -82,7 +130,7 @@ public sealed class ViewerForm : Form
         try
         {
             if (VirtualDisplay.IsOn(device)) VirtualDisplay.TurnOff(device);
-            else VirtualDisplay.TurnOn(device);
+            else VirtualDisplay.TurnOn(device, _settings);
         }
         catch (Exception ex) { ShowError(ex.Message); }
     }
@@ -203,6 +251,8 @@ public sealed class ViewerForm : Form
     {
         SystemEvents.DisplaySettingsChanged -= OnDisplaysChanged;
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+        _settingsWatcher.Dispose();
+        _settingsDebounce.Dispose();
         _timer.Dispose();
         _frame?.Dispose();
         if (_turnedOn && VirtualDisplay.FindDevice() is { } device)
