@@ -1,0 +1,12 @@
+# Build output
+bin/
+obj/
+out/
+
+# Third-party driver: downloaded separately (see README)
+VirtualDisplayDriver/
+
+# Editor files
+.vs/
+.vscode/
+*.user
