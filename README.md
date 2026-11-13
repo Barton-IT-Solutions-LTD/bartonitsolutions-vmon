@@ -23,9 +23,9 @@ The finished app is `out\VirtualScreenViewer.exe`. It needs Windows 10 2004 or l
 
 Run `out\VirtualScreenViewer.exe`. It's a window showing the virtual display live, like a monitor in a window. Resize it however you like and the picture scales to fit. Move apps onto the virtual display with Win + Shift + arrow keys, or by dragging them past the edge of your screen.
 
-- **Fully off when you're not using it.** If the virtual display is off when the app opens, the app enables the device and connects the display; on exit it disconnects it and disables the device again, as if you'd disabled it in Device Manager. Windows then sees no extra monitor and no extra adapter.
+- **Fully off when you close it.** Opening the app enables the device and connects the display if needed. Closing it always disconnects the display and disables the device, as if you had disabled it in Device Manager, so Windows sees no extra monitor or adapter until you open the app again.
 - **Menu**: press `Ctrl+Alt+S`, or right-click the title bar → **Settings menu**. A small panel opens at the side of the viewer where you can:
-  - switch the virtual display on or off (once you do, the app leaves it as you set it when it exits);
+  - switch the virtual display on or off while the app is open;
   - pick its resolution and refresh rate (only the ones the driver offers);
   - turn on **Fit resolution to window**: when you resize the viewer, the display switches to the driver's resolution closest to the window's shape, so there are no black bars;
   - open Windows' display settings, or change the menu's shortcut.

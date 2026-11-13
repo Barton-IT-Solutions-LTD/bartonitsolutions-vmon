@@ -17,8 +17,7 @@ public sealed class ViewerForm : Form
     private Screen? _target;
     private string? _message = "Starting the virtual display…";
     private bool _busy = true;   // powering the device on/off in the background
-    private bool _poweredOn;     // we enabled the device, so disable it again on exit
-    private bool _attached;      // we attached the monitor, so detach it again on exit
+    private Task<string?>? _starting; // enabling the device at startup
     private bool _exiting;
 
     private readonly FileSystemWatcher _settingsWatcher;
@@ -90,10 +89,11 @@ public sealed class ViewerForm : Form
                     + "Run install-driver.ps1 again so this app can switch it on and off itself.");
                 return;
             }
-            device = await Task.Run(VirtualDisplay.PowerOn);
-            _poweredOn = device is not null;
+            _starting = Task.Run(VirtualDisplay.PowerOn);
+            device = await _starting;
         }
         _busy = false;
+        if (_exiting) return;
         if (device is null)
         {
             SetMessage("No virtual display found.\n\nInstall the Virtual Display Driver (see README).");
@@ -101,18 +101,17 @@ public sealed class ViewerForm : Form
         }
         try
         {
-            if (!VirtualDisplay.IsOn(device)) { VirtualDisplay.TurnOn(device, _settings); _attached = true; }
+            if (!VirtualDisplay.IsOn(device)) VirtualDisplay.TurnOn(device, _settings);
             else VirtualDisplay.UseSettings(device, _settings);
         }
         catch (Exception ex) { ShowError(ex.Message); }
         FindTarget();
     }
 
-    /// <summary>The menu's "Virtual display on" box: the user's choice from now on, kept on exit.</summary>
+    /// <summary>The menu's "Virtual display on" box.</summary>
     private async void ToggleDisplay()
     {
         if (_busy) return;
-        _poweredOn = _attached = false;
         var device = VirtualDisplay.FindDevice();
         try
         {
@@ -136,12 +135,17 @@ public sealed class ViewerForm : Form
         finally { _busy = false; FindTarget(); }
     }
 
+    /// <summary>
+    /// On exit the virtual display always goes fully off: disconnected, then the device disabled, so
+    /// Windows sees no extra monitor or adapter until the app opens again.
+    /// </summary>
     private void ShutDownDisplay()
     {
-        var device = VirtualDisplay.FindDevice();
-        if (device is null) return;
-        if (_attached || _poweredOn) try { VirtualDisplay.TurnOff(device); } catch { }
-        if (_poweredOn || _attached && VirtualDisplay.CanPowerOff) VirtualDisplay.PowerOff();
+        // If it's still coming up, let that finish first, or it could switch back on after we've gone.
+        try { _starting?.Wait(TimeSpan.FromSeconds(20)); } catch { }
+        if (VirtualDisplay.FindDevice() is { } device && VirtualDisplay.IsOn(device))
+            try { VirtualDisplay.TurnOff(device); } catch { }
+        VirtualDisplay.PowerOff();
     }
 
     // ---------- Which display to show ----------
