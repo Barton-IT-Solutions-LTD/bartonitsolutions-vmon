@@ -1,17 +1,57 @@
 # Installs the Virtual Display Driver from the VirtualDisplayDriver folder (needs admin; it will ask).
 # The driver isn't part of this repo: download it first (see README).
 #   Right-click -> Run with PowerShell.   Add -Uninstall to remove it again.
-param([switch]$Uninstall)
+param([switch]$Uninstall, [string]$UserSid)
 
 $ErrorActionPreference = 'Stop'
 $HardwareId = 'Root\MttVDD'
 $DriverDir = Join-Path $PSScriptRoot 'VirtualDisplayDriver'
 
+# The account that runs the viewer may start the on/off tasks; remember it before elevating
+# (the admin prompt may log in as a different account).
+if (-not $UserSid) { $UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')) {
-    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+    $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-UserSid', $UserSid)
     if ($Uninstall) { $argList += '-Uninstall' }
     Start-Process powershell -Verb RunAs -ArgumentList $argList
     exit
+}
+
+$TaskFolder = 'Barton IT'
+$Tasks = @{ 'Virtual display on' = '/enable-device'; 'Virtual display off' = '/disable-device' }
+
+# Two tasks that enable/disable the device as SYSTEM. Their security descriptor lets this user run
+# them (read + execute) but not change them, so the viewer can switch the device without a UAC prompt.
+function Register-PowerTasks($instanceId) {
+    $svc = New-Object -ComObject Schedule.Service
+    $svc.Connect()
+    $root = $svc.GetFolder('\')
+    try { $folder = $root.GetFolder($TaskFolder) } catch { $folder = $root.CreateFolder($TaskFolder) }
+    $sddl = "D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;$UserSid)"
+    foreach ($name in $Tasks.Keys) {
+        $def = $svc.NewTask(0)
+        $def.RegistrationInfo.Description = 'Used by Virtual Screen Viewer to switch the virtual display device on and off.'
+        $def.Settings.AllowDemandStart = $true
+        $def.Settings.DisallowStartIfOnBatteries = $false
+        $def.Settings.StopIfGoingOnBatteries = $false
+        $def.Settings.ExecutionTimeLimit = 'PT2M'
+        $def.Settings.MultipleInstances = 2   # ignore a second start while one runs
+        $def.Principal.RunLevel = 1           # highest
+        $action = $def.Actions.Create(0)
+        $action.Path = "$env:SystemRoot\System32\pnputil.exe"
+        $action.Arguments = "$($Tasks[$name]) `"$instanceId`""
+        # 6 = create or update, 5 = service account
+        $folder.RegisterTaskDefinition($name, $def, 6, 'SYSTEM', $null, 5, $sddl) | Out-Null
+    }
+}
+
+function Remove-PowerTasks {
+    $svc = New-Object -ComObject Schedule.Service
+    $svc.Connect()
+    try { $folder = $svc.GetFolder("\$TaskFolder") } catch { return }
+    foreach ($name in $Tasks.Keys) { try { $folder.DeleteTask($name, 0) } catch {} }
+    if ($folder.GetTasks(1).Count -eq 0) { try { $svc.GetFolder('\').DeleteFolder($TaskFolder, 0) } catch {} }
 }
 
 function Find-Device { Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object { $_.HardwareID -contains $HardwareId } }
@@ -21,6 +61,7 @@ try {
         $dev = Find-Device
         if (-not $dev) { Write-Host 'Virtual Display Driver is not installed.' }
         foreach ($d in $dev) { pnputil /remove-device $d.InstanceId | Out-Host }
+        Remove-PowerTasks
         Write-Host 'Removed.' -ForegroundColor Green
     }
     else {
@@ -79,7 +120,11 @@ public static class RootDevice {
 '@
             if ([RootDevice]::Install($HardwareId, $inf)) { Write-Host 'Windows says a restart is needed to finish.' -ForegroundColor Yellow }
         }
-        Write-Host 'Virtual Display Driver installed. Use "Virtual display: on/off" in the viewer.' -ForegroundColor Green
+        $dev = @(Find-Device)[0]
+        if (-not $dev) { throw 'The device was not created.' }
+        Write-Host 'Letting the viewer switch the device on and off (scheduled tasks under "Barton IT")...'
+        Register-PowerTasks $dev.InstanceId
+        Write-Host 'Virtual Display Driver installed. The viewer switches it on when it opens and off again when it closes.' -ForegroundColor Green
     }
 }
 catch {
