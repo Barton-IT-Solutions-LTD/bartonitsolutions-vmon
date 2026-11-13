@@ -1,29 +1,28 @@
-# Virtual Screen Viewer
+# Virtual Screen
 
-Shows a virtual "second monitor" live inside a window on your real monitor. Move apps onto it, and capture the virtual screen in OBS or Sunshine to stream it.
+Shows a virtual "second monitor" live inside a window on your real monitor. Move apps onto it, and capture the virtual screen in OBS or Sunshine to stream it. The virtual display exists only while the app is open.
 
-The virtual monitor comes from the [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) by MikeTheTech and the VirtualDrivers contributors. It isn't included in this repo; you download it yourself (step 1).
+The virtual monitor comes from the [Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver) by MikeTheTech and the VirtualDrivers contributors. It isn't included in this repo; you download it yourself.
 
-## 1. Install the virtual display driver (one time)
+## Install
 
-1. Download a release from https://github.com/VirtualDrivers/Virtual-Display-Driver/releases. This app was tested with the October 2024 driver (version 24.10.27).
-2. Put these files from the download in a `VirtualDisplayDriver` folder next to this README: `MttVDD.inf`, `MttVDD.dll`, `mttvdd.cat`, `Virtual_Display_Driver.cer` and `vdd_settings.xml`.
-3. Right-click `install-driver.ps1` → **Run with PowerShell** and accept the admin prompt. It trusts the driver's certificate, copies `vdd_settings.xml` to `C:\VirtualDisplayDriver\`, creates the virtual display device, and adds two scheduled tasks (Task Scheduler → **Barton IT** → *Virtual display on* / *off*). The tasks enable and disable the device as SYSTEM; only your account may start them, so the viewer can switch the device without an admin prompt. Run it with `-Uninstall` to remove the device and the tasks.
+1. **Get the driver.** Download a release from https://github.com/VirtualDrivers/Virtual-Display-Driver/releases (tested with the October 2024 driver, version 24.10.27). Put these files from it in a `VirtualDisplayDriver` folder next to this README: `MttVDD.inf`, `MttVDD.dll`, `mttvdd.cat`, `Virtual_Display_Driver.cer` and `vdd_settings.xml`.
+2. **Build the app.** Install the **.NET 8 SDK** (https://dotnet.microsoft.com/download/dotnet/8.0), then double-click `build.bat`. It makes `out\VirtualScreenViewer.exe`. Each push to GitHub also builds it (Actions → Build → the `VirtualScreenViewer` artifact).
+3. **Install.** Right-click `install.ps1` → **Run with PowerShell** and accept the admin prompt. It:
+   - trusts the driver's certificate and creates the virtual display device;
+   - copies `vdd_settings.xml` to `C:\VirtualDisplayDriver\` (the driver's list of resolutions and refresh rates);
+   - copies the app to `C:\Program Files\Barton IT\Virtual Screen\` and adds **Virtual Screen** to the Start menu;
+   - adds the **Barton IT Virtual Screen** service, which switches the virtual display on and off for the app (see below).
 
-Already installed with an older version? Run `install-driver.ps1` again to add the tasks.
+To update after rebuilding, close the app and run `install.ps1` again. To remove everything (service, device, certificate, app), run it with `-Uninstall`. Your settings are kept.
 
-`C:\VirtualDisplayDriver\vdd_settings.xml` lists the resolutions and refresh rates the driver offers. Restart the driver or reboot after editing it.
+It needs Windows 10 2004 or later.
 
-## 2. Build the app
+## Use it
 
-Install the **.NET 8 SDK** (https://dotnet.microsoft.com/download/dotnet/8.0), then double-click `build.bat`.
-The finished app is `out\VirtualScreenViewer.exe`. It needs Windows 10 2004 or later.
+Open **Virtual Screen** from the Start menu. It's a window showing the virtual display live, like a monitor in a window. Resize it however you like and the picture scales to fit. Move apps onto the virtual display with Win + Shift + arrow keys, or by dragging them past the edge of your screen.
 
-## 3. Use it
-
-Run `out\VirtualScreenViewer.exe`. It's a window showing the virtual display live, like a monitor in a window. Resize it however you like and the picture scales to fit. Move apps onto the virtual display with Win + Shift + arrow keys, or by dragging them past the edge of your screen.
-
-- **Fully off when you close it.** Opening the app enables the device and connects the display if needed. Closing it always disconnects the display and disables the device, as if you had disabled it in Device Manager, so Windows sees no extra monitor or adapter until you open the app again.
+- **Only on while the app is open.** Opening the app switches the virtual display on. Closing it switches it fully off again, as if you'd disabled it in Device Manager, so Windows sees no extra monitor or adapter. That also happens if the app crashes or is ended in Task Manager.
 - **Menu**: press `Ctrl+Alt+S`, or right-click the title bar → **Settings menu**. A small panel opens at the side of the viewer where you can:
   - switch the virtual display on or off while the app is open;
   - pick its resolution and refresh rate (only the ones the driver offers);
@@ -32,12 +31,20 @@ Run `out\VirtualScreenViewer.exe`. It's a window showing the virtual display liv
 
   Changes apply straight away. Press the shortcut again or ✕ to close it.
 - Only one viewer runs at a time; opening it again brings the running one to the front.
-- The window remembers its size and position, and its title bar follows Windows' light/dark app setting.
-- Capture uses Windows Graphics Capture on the graphics card (as OBS does), at the display's full frame rate, with the cursor included.
+- The window remembers its size and position, and follows Windows' light/dark setting.
+
+## How the switching works
+
+Enabling and disabling a device needs admin rights, and the app runs without them. So `install.ps1` adds a small service (the same exe, run with `--service`) that runs as SYSTEM:
+
+- The app connects to the service over a local named pipe and asks it to switch the device on. Only local, logged-on users can connect; the network can't.
+- The device stays on only while the app holds that connection. When the app asks for it off, closes, crashes or is killed, the connection ends and the service disables the device two seconds later.
+- When the service starts (for example after a reboot), it makes sure the device is off.
+- If something goes wrong, the service logs a warning in Event Viewer → Windows Logs → Application.
 
 ## Settings
 
-The menu sets everything. Settings are kept in `VirtualScreenViewer.json` next to the exe (`out\`), which you can also edit by hand; changes apply as soon as it's saved.
+The menu sets everything. Settings are kept in `%LOCALAPPDATA%\Barton IT\Virtual Screen\settings.json`, which you can also edit by hand; changes apply as soon as it's saved.
 
 ```json
 {
@@ -53,18 +60,33 @@ The menu sets everything. Settings are kept in `VirtualScreenViewer.json` next t
 - `width` / `height`: its resolution, e.g. `2560` and `1440`. `0` for both keeps the one set in Windows' display settings.
 - `menuHotkey`: needs at least one of Ctrl, Alt, Shift or Win. Empty means none (the title bar menu still works).
 
-Only the modes listed in `C:\VirtualDisplayDriver\vdd_settings.xml` work; anything else shows an error and leaves the display as it was. A mistake in the file shows a message and the defaults are used until it's fixed.
+Only the modes listed in `C:\VirtualDisplayDriver\vdd_settings.xml` work; anything else shows an error and leaves the display as it was. To offer more, edit that file and run `install.ps1` again (or reboot).
 
 Higher refresh rates cost more compositor time. 60 Hz suits OBS at 60 fps; use more only if you stream it at a higher frame rate (for example 120 Hz to Moonlight).
 
 ## Streaming
 
 - **OBS**: add a *Display Capture* source and select the virtual monitor. You stream it while still using your real monitor freely.
-- **Sunshine + Moonlight**: in Sunshine, set the output display to the virtual monitor.
+- **Sunshine + Moonlight**: in Sunshine, set the output display to the virtual monitor. The app must be open for the display to exist.
 
 ## Known limits
 
-- The viewer is for watching only: use the virtual display through its apps, OBS or Moonlight.
+- The viewer is for watching. Use the virtual display through the apps on it, OBS or Moonlight.
 - Some fullscreen-exclusive games or DRM video show black. Run games in borderless windowed mode.
 - On Windows 10 the virtual display gets a yellow "being captured" border (Windows 11 lets the app turn it off).
 - If the window is on the display it's showing, it'll tell you to move it, to avoid a hall-of-mirrors effect.
+- If the graphics driver resets, the picture comes back by itself; after three failures in 30 seconds it shows the error instead, until the displays change.
+
+## Project layout
+
+| File | What it does |
+|---|---|
+| `Program.cs` | Starts the viewer, or the service with `--service`; one viewer at a time. |
+| `ViewerForm.cs` | The window: picture, messages, menu, shortcut, window position. |
+| `DisplayController.cs` | Switches the display on and off in order (off, starting, on, stopping). |
+| `PowerService.cs` / `PowerClient.cs` | The service and the app's connection to it. |
+| `DeviceControl.cs` | Enables and disables the device (SetupAPI), found by its hardware ID `Root\MttVDD`. |
+| `VirtualDisplay.cs` | Finds the virtual monitor; attaches, detaches and sets its mode. |
+| `GpuView.cs` | Live capture (Windows Graphics Capture) drawn with Direct2D. |
+| `MenuPanel.cs` / `ViewerSettings.cs` | The settings menu and the settings file. |
+| `install.ps1` | Install, update and uninstall. |

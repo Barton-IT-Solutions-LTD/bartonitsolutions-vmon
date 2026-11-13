@@ -1,20 +1,19 @@
 namespace VirtualScreenViewer;
 
 /// <summary>
-/// A small side panel inside the viewer with every setting in one place. Changes apply straight
-/// away: settings are saved to the JSON file, which the viewer reloads and applies.
+/// A small side panel inside the viewer with every setting in one place. It only edits
+/// <see cref="ViewerSettings"/> and raises events; the viewer saves and applies them straight away.
+/// Sizes are in 96-dpi units; the viewer scales them for the screen's DPI.
 /// </summary>
 internal sealed class MenuPanel : Panel
 {
     public event Action? DisplayToggled, SettingsChanged, CloseClicked;
 
-    private static readonly Color Back = Color.FromArgb(32, 32, 32), Fore = Color.Gainsboro, Dim = Color.Gray, Field = Color.FromArgb(48, 48, 48);
-
-    private readonly Label _now = new() { AutoSize = true, ForeColor = Dim, Margin = new Padding(0, 0, 0, 8) };
+    private readonly Label _now = new() { AutoSize = true, Margin = new Padding(0, 0, 0, 8), Tag = "dim" };
     private readonly CheckBox _on = Check("Virtual display on");
     private readonly ComboBox _resolution = Combo(), _refresh = Combo();
     private readonly CheckBox _fit = Check("Fit resolution to window");
-    private readonly TextBox _hkMenu = Hotkey();
+    private readonly TextBox _hkMenu = new() { Width = 240, BorderStyle = BorderStyle.FixedSingle, ShortcutsEnabled = false };
     private ViewerSettings _s = new();
     private List<(int Width, int Height, int[] Rates)> _modes = new();
     private bool _syncing;
@@ -23,8 +22,6 @@ internal sealed class MenuPanel : Panel
     {
         Width = 270;
         Dock = DockStyle.Right;
-        BackColor = Back;
-        ForeColor = Fore;
         Visible = false;
 
         var flow = new FlowLayoutPanel
@@ -32,7 +29,7 @@ internal sealed class MenuPanel : Panel
             Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
             AutoScroll = true, Padding = new Padding(12, 10, 12, 10),
         };
-        var close = new Button { Text = "✕", FlatStyle = FlatStyle.Flat, Size = new Size(28, 26), ForeColor = Fore, Anchor = AnchorStyles.Right, Margin = new Padding(0) };
+        var close = new Button { Text = "✕", FlatStyle = FlatStyle.Flat, Size = new Size(28, 26), Anchor = AnchorStyles.Right, Margin = new Padding(0) };
         close.FlatAppearance.BorderSize = 0;
         close.Click += (_, _) => CloseClicked?.Invoke();
         var header = new TableLayoutPanel { ColumnCount = 2, Width = 240, Height = 28, Margin = new Padding(0, 0, 0, 4) };
@@ -41,22 +38,19 @@ internal sealed class MenuPanel : Panel
         header.Controls.Add(new Label { Text = "Virtual Screen", AutoSize = true, Font = new Font(Font.FontFamily, 11f, FontStyle.Bold), Anchor = AnchorStyles.Left });
         header.Controls.Add(close);
 
-        flow.Controls.Add(header);
-        flow.Controls.Add(_now);
-        flow.Controls.Add(Heading("Display"));
-        flow.Controls.Add(_on);
-        flow.Controls.Add(Caption("Resolution"));
-        flow.Controls.Add(_resolution);
-        flow.Controls.Add(Caption("Refresh rate"));
-        flow.Controls.Add(_refresh);
-        flow.Controls.Add(_fit);
-        var winSettings = Btn("Windows display settings…");
-        winSettings.Click += (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:display") { UseShellExecute = true }); } catch { } };
-        flow.Controls.Add(winSettings);
+        var winSettings = new Button { Text = "Windows display settings…", Width = 240, Height = 28, FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 6, 0, 2) };
+        winSettings.Click += (_, _) =>
+        {
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:display") { UseShellExecute = true }); } catch { }
+        };
 
-        flow.Controls.Add(Heading("Shortcut for this menu"));
-        flow.Controls.Add(_hkMenu);
-        flow.Controls.Add(new Label { Text = "Click the box and press the keys.\nThe title bar's right-click menu\nopens it too.", AutoSize = true, ForeColor = Dim, Margin = new Padding(0, 4, 0, 0) });
+        flow.Controls.AddRange(new Control[]
+        {
+            header, _now,
+            Heading("Display"), _on, Caption("Resolution"), _resolution, Caption("Refresh rate"), _refresh, _fit, winSettings,
+            Heading("Shortcut for this menu"), _hkMenu,
+            new Label { Text = "Click the box and press the keys.\nThe title bar's right-click menu\nopens it too.", AutoSize = true, Margin = new Padding(0, 4, 0, 0), Tag = "dim" },
+        });
         Controls.Add(flow);
 
         _on.CheckedChanged += (_, _) => { if (!_syncing) DisplayToggled?.Invoke(); };
@@ -68,17 +62,24 @@ internal sealed class MenuPanel : Panel
     }
 
     /// <summary>Shows the current state. Called whenever settings or the display change.</summary>
-    public void Sync(ViewerSettings s, string? device, bool busy)
+    public void Sync(ViewerSettings s, DisplayState state, string? problem)
     {
         _s = s;
         _syncing = true;
         try
         {
-            bool attached = device is not null && VirtualDisplay.IsOn(device);
-            var current = attached ? VirtualDisplay.Current(device!) : null;
-            _now.Text = busy ? "Switching…" : current is { } c ? $"Now {c.Width} × {c.Height} at {c.Hz} Hz" : "Off";
-            _on.Checked = attached;
-            _on.Enabled = !busy;
+            var device = state == DisplayState.On ? VirtualDisplay.FindDevice() : null;
+            var current = device is not null && VirtualDisplay.IsOn(device) ? VirtualDisplay.Current(device) : null;
+            _now.Text = state switch
+            {
+                DisplayState.Starting => "Switching on…",
+                DisplayState.Stopping => "Switching off…",
+                DisplayState.On when current is { } c => $"Now {c.Width} × {c.Height} at {c.Hz} Hz",
+                _ => problem is null ? "Off" : "Off: " + problem,
+            };
+            _now.MaximumSize = new Size(_hkMenu.Width, 0);
+            _on.Checked = state is DisplayState.On or DisplayState.Starting;
+            _on.Enabled = state is DisplayState.On or DisplayState.Off;
 
             if (_modes.Count == 0) _modes = VirtualDisplay.Modes();
             Fill(_resolution, "Keep Windows' setting", _modes.Select(m => $"{m.Width} × {m.Height}").Distinct(), s.Width > 0 ? $"{s.Width} × {s.Height}" : null);
@@ -86,9 +87,30 @@ internal sealed class MenuPanel : Panel
             Fill(_refresh, "Leave as Windows has it", rates, s.RefreshRate > 0 ? $"{s.RefreshRate} Hz" : null);
             _resolution.Enabled = !s.FitToWindow; // fit-to-window picks it
             _fit.Checked = s.FitToWindow;
-            SetIfIdle(_hkMenu, s.MenuHotkey);
+            if (!_hkMenu.Focused) _hkMenu.Text = s.MenuHotkey;
         }
         finally { _syncing = false; }
+    }
+
+    /// <summary>Colours to match Windows' light or dark app setting.</summary>
+    public void ApplyTheme(bool dark)
+    {
+        Color back = dark ? Color.FromArgb(32, 32, 32) : Color.FromArgb(243, 243, 243);
+        Color field = dark ? Color.FromArgb(48, 48, 48) : Color.White;
+        Color fore = dark ? Color.Gainsboro : Color.FromArgb(30, 30, 30);
+        Color dim = dark ? Color.Gray : Color.FromArgb(100, 100, 100);
+        Color accent = dark ? Color.FromArgb(255, 140, 0) : Color.FromArgb(190, 90, 0);
+        Color border = dark ? Color.FromArgb(70, 70, 70) : Color.FromArgb(200, 200, 200);
+
+        void Paint(Control c)
+        {
+            c.BackColor = c is ComboBox or TextBox or Button ? field : back;
+            c.ForeColor = c.Tag as string switch { "dim" => dim, "heading" => accent, _ => fore };
+            if (c is ComboBox combo) combo.FlatStyle = FlatStyle.Flat;
+            if (c is Button b) b.FlatAppearance.BorderColor = b.FlatAppearance.BorderSize == 0 ? back : border;
+            foreach (Control child in c.Controls) Paint(child);
+        }
+        Paint(this);
     }
 
     private void Changed()
@@ -116,8 +138,6 @@ internal sealed class MenuPanel : Panel
         box.SelectedIndex = selected is null ? 0 : box.Items.IndexOf(selected);
     }
 
-    private static void SetIfIdle(TextBox box, string text) { if (!box.Focused) box.Text = text; }
-
     private static void CaptureHotkey(object? sender, KeyEventArgs e)
     {
         var box = (TextBox)sender!;
@@ -133,21 +153,12 @@ internal sealed class MenuPanel : Panel
         box.Text = string.Join("+", parts);
     }
 
-    // ---------- Small styled controls ----------
-
     private static Label Heading(string text) => new()
     {
-        Text = text.ToUpperInvariant(), AutoSize = true, ForeColor = Color.FromArgb(255, 140, 0),
+        Text = text.ToUpperInvariant(), AutoSize = true, Tag = "heading",
         Font = new Font(SystemFonts.MessageBoxFont!.FontFamily, 8f, FontStyle.Bold), Margin = new Padding(0, 12, 0, 4),
     };
-    private static Label Caption(string text) => new() { Text = text, AutoSize = true, ForeColor = Dim, Margin = new Padding(0, 6, 0, 2) };
-    private static CheckBox Check(string text) => new() { Text = text, AutoSize = true, ForeColor = Fore, Margin = new Padding(0, 4, 0, 2) };
-    private static ComboBox Combo() => new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, BackColor = Field, ForeColor = Fore, FlatStyle = FlatStyle.Flat };
-    private static TextBox Hotkey() => new() { Width = 240, BackColor = Field, ForeColor = Fore, BorderStyle = BorderStyle.FixedSingle, ShortcutsEnabled = false };
-    private static Button Btn(string text)
-    {
-        var b = new Button { Text = text, Width = 240, Height = 28, FlatStyle = FlatStyle.Flat, BackColor = Field, ForeColor = Fore, Margin = new Padding(0, 6, 0, 2) };
-        b.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 70);
-        return b;
-    }
+    private static Label Caption(string text) => new() { Text = text, AutoSize = true, Tag = "dim", Margin = new Padding(0, 6, 0, 2) };
+    private static CheckBox Check(string text) => new() { Text = text, AutoSize = true, Margin = new Padding(0, 4, 0, 2) };
+    private static ComboBox Combo() => new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240 };
 }

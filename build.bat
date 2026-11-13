@@ -5,5 +5,5 @@ dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile
 if errorlevel 1 (echo Build failed. & pause & exit /b 1)
 echo.
 echo Done: %~dp0out\VirtualScreenViewer.exe
-start "" "%~dp0out"
+echo Now run install.ps1 (right-click, Run with PowerShell) to install or update it.
 pause

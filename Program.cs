@@ -1,3 +1,5 @@
+using System.ServiceProcess;
+
 namespace VirtualScreenViewer;
 
 internal static class Program
@@ -5,8 +7,15 @@ internal static class Program
     private const string Name = @"Local\BartonIT.VirtualScreenViewer";
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        // The same exe is the Windows service that switches the device (install.ps1 sets it up).
+        if (args.Contains("--service", StringComparer.OrdinalIgnoreCase))
+        {
+            ServiceBase.Run(new PowerService());
+            return;
+        }
+
         // One viewer at a time: a second launch just brings the running one to the front.
         using var show = new EventWaitHandle(false, EventResetMode.AutoReset, Name + ".Show", out bool first);
         if (!first) { show.Set(); return; }

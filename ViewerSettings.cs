@@ -4,9 +4,8 @@ using System.Text.Json.Serialization;
 namespace VirtualScreenViewer;
 
 /// <summary>
-/// The virtual display's refresh rate and resolution, from VirtualScreenViewer.json next to the
-/// exe. The file is created with the defaults the first time the app runs, and changes to it are
-/// applied as soon as it's saved.
+/// The viewer's settings, in <see cref="FilePath"/>. Created with the defaults the first time the
+/// app runs. The menu changes them; edits to the file by hand apply as soon as it's saved.
 /// </summary>
 internal sealed class ViewerSettings
 {
@@ -30,7 +29,7 @@ internal sealed class ViewerSettings
 
     public void Save()
     {
-        try { File.WriteAllText(FilePath, JsonSerializer.Serialize(this, Json)); } catch { }
+        try { Write(JsonSerializer.Serialize(this, Json)); } catch { }
     }
 
     /// <summary>"Ctrl+Alt+V" as RegisterHotKey modifiers and key; null if it isn't a valid hotkey. Empty = none.</summary>
@@ -57,7 +56,28 @@ internal sealed class ViewerSettings
         return key == Keys.None || mods == 0 ? null : (mods, key);
     }
 
-    public static string FilePath => Path.Combine(AppContext.BaseDirectory, "VirtualScreenViewer.json");
+    /// <summary>%LOCALAPPDATA%\Barton IT\Virtual Screen\settings.json: per user, and writable wherever the app is installed.</summary>
+    public static string FilePath { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Barton IT", "Virtual Screen", "settings.json");
+
+    /// <summary>Older versions kept the file next to the exe.</summary>
+    private static string OldFilePath => Path.Combine(AppContext.BaseDirectory, "VirtualScreenViewer.json");
+
+    /// <summary>What this app last wrote, so the file watcher can ignore our own saves.</summary>
+    private static string? _lastWritten;
+
+    /// <summary>Whether the file now holds something other than what this app last wrote (a hand edit).</summary>
+    public static bool ChangedElsewhere()
+    {
+        try { return File.ReadAllText(FilePath) != _lastWritten; } catch { return false; }
+    }
+
+    private static void Write(string text)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+        _lastWritten = text;
+        File.WriteAllText(FilePath, text);
+    }
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -73,13 +93,16 @@ internal sealed class ViewerSettings
         problem = null;
         if (!File.Exists(FilePath))
         {
-            var defaults = new ViewerSettings();
-            try { File.WriteAllText(FilePath, JsonSerializer.Serialize(defaults, Json)); } catch { }
-            return defaults;
+            // Bring over an older version's file, else start from the defaults.
+            string text;
+            try { text = File.ReadAllText(OldFilePath); } catch { text = JsonSerializer.Serialize(new ViewerSettings(), Json); }
+            try { Write(text); } catch { }
         }
         try
         {
-            var s = JsonSerializer.Deserialize<ViewerSettings>(File.ReadAllText(FilePath), Json) ?? new ViewerSettings();
+            var text = File.ReadAllText(FilePath);
+            _lastWritten = text;
+            var s = JsonSerializer.Deserialize<ViewerSettings>(text, Json) ?? new ViewerSettings();
             if (s.RefreshRate < 0 || s.Width < 0 || s.Height < 0 || (s.Width == 0) != (s.Height == 0))
             {
                 problem = "Use 0 or positive numbers, and set width and height together (or both to 0). Using the defaults for now.";

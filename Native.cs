@@ -4,41 +4,11 @@ namespace VirtualScreenViewer;
 
 internal static class Native
 {
-    public const int SRCCOPY = 0x00CC0020;
-    public const int CURSOR_SHOWING = 0x1;
-    public const int DI_NORMAL = 0x3;
     public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X; public int Y; }
 
-    [StructLayout(LayoutKind.Sequential)]
-    public struct CURSORINFO
-    {
-        public int cbSize;
-        public int flags;
-        public IntPtr hCursor;
-        public POINT ptScreenPos;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct ICONINFO
-    {
-        [MarshalAs(UnmanagedType.Bool)] public bool fIcon;
-        public int xHotspot;
-        public int yHotspot;
-        public IntPtr hbmMask;
-        public IntPtr hbmColor;
-    }
-
-    [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
-    [DllImport("gdi32.dll")] public static extern bool BitBlt(IntPtr hdcDest, int x, int y, int w, int h, IntPtr hdcSrc, int sx, int sy, int rop);
-    [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr hObject);
-
-    [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO pci);
-    [DllImport("user32.dll")] public static extern bool GetIconInfo(IntPtr hIcon, out ICONINFO piconinfo);
-    [DllImport("user32.dll")] public static extern bool DrawIconEx(IntPtr hdc, int x, int y, IntPtr hIcon, int cx, int cy, int step, IntPtr brush, int flags);
     [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hWnd, int attr, ref int value, int size);
 
     // ---------- Display configuration ----------
@@ -81,6 +51,15 @@ internal static class Native
         public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
     }
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool EnumDisplayDevicesW(string? device, uint index, ref DISPLAY_DEVICE dd, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool EnumDisplaySettingsW(string device, int mode, ref DEVMODE dm);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int ChangeDisplaySettingsExW(string? device, ref DEVMODE dm, IntPtr hwnd, uint flags, IntPtr param);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int ChangeDisplaySettingsExW(string? device, IntPtr dm, IntPtr hwnd, uint flags, IntPtr param);
+
     // ---------- Monitors and the menu shortcut ----------
 
     public const uint MONITOR_DEFAULTTONULL = 0;
@@ -94,20 +73,38 @@ internal static class Native
     // ---------- Window system menu (title bar right-click) ----------
 
     public const int WM_SYSCOMMAND = 0x0112;
-    public const int WM_INITMENUPOPUP = 0x0117;
-    public const uint MF_STRING = 0x0, MF_SEPARATOR = 0x800, MF_BYCOMMAND = 0x0, MF_CHECKED = 0x8, MF_UNCHECKED = 0x0, MF_ENABLED = 0x0, MF_GRAYED = 0x1;
+    public const uint MF_STRING = 0x0, MF_SEPARATOR = 0x800;
 
     [DllImport("user32.dll")] public static extern IntPtr GetSystemMenu(IntPtr hWnd, bool revert);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool AppendMenuW(IntPtr menu, uint flags, UIntPtr id, string? text);
-    [DllImport("user32.dll")] public static extern uint CheckMenuItem(IntPtr menu, uint id, uint flags);
-    [DllImport("user32.dll")] public static extern bool EnableMenuItem(IntPtr menu, uint id, uint flags);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern bool EnumDisplayDevicesW(string? device, uint index, ref DISPLAY_DEVICE dd, uint flags);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern bool EnumDisplaySettingsW(string device, int mode, ref DEVMODE dm);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern int ChangeDisplaySettingsExW(string? device, ref DEVMODE dm, IntPtr hwnd, uint flags, IntPtr param);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern int ChangeDisplaySettingsExW(string? device, IntPtr dm, IntPtr hwnd, uint flags, IntPtr param);
+    // ---------- Device enable/disable (the service, running as SYSTEM) ----------
+
+    public const int DIGCF_PRESENT = 0x2;
+    public const int SPDRP_HARDWAREID = 0x1;
+    public const int DIF_PROPERTYCHANGE = 0x12;
+    public const int DICS_ENABLE = 1, DICS_DISABLE = 2, DICS_FLAG_GLOBAL = 1;
+    public const int CM_PROB_DISABLED = 22;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SP_DEVINFO_DATA { public int cbSize; public Guid ClassGuid; public int DevInst; public IntPtr Reserved; }
+
+    /// <summary>SP_PROPCHANGE_PARAMS, with its SP_CLASSINSTALL_HEADER inlined.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SP_PROPCHANGE_PARAMS { public int cbSize; public int InstallFunction; public int StateChange; public int Scope; public int HwProfile; }
+
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr SetupDiGetClassDevsW(ref Guid cls, string? enumerator, IntPtr hwnd, int flags);
+    [DllImport("setupapi.dll", SetLastError = true)]
+    public static extern bool SetupDiEnumDeviceInfo(IntPtr set, int index, ref SP_DEVINFO_DATA data);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool SetupDiGetDeviceRegistryPropertyW(IntPtr set, ref SP_DEVINFO_DATA data, int prop, out int regType, byte[] buffer, int size, out int required);
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool SetupDiSetClassInstallParamsW(IntPtr set, ref SP_DEVINFO_DATA data, ref SP_PROPCHANGE_PARAMS p, int size);
+    [DllImport("setupapi.dll", SetLastError = true)]
+    public static extern bool SetupDiCallClassInstaller(int function, IntPtr set, ref SP_DEVINFO_DATA data);
+    [DllImport("setupapi.dll")]
+    public static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
+    [DllImport("cfgmgr32.dll")]
+    public static extern int CM_Get_DevNode_Status(out int status, out int problem, int devInst, int flags);
 }

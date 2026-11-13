@@ -5,181 +5,142 @@ namespace VirtualScreenViewer;
 
 /// <summary>
 /// A window that shows the virtual display live, like a monitor in a window, with a small settings
-/// menu (Ctrl+Alt+S, or the title bar's right-click menu). If the virtual display was off when the
-/// app started, the app brings it all the way up (device enabled, monitor attached) and takes it all
-/// the way down again on exit, so it costs nothing while the app isn't running.
+/// menu (Ctrl+Alt+S, or the title bar's right-click menu). Opening it switches the virtual display
+/// on; closing it (or the app ending any other way) switches it fully off again.
 /// </summary>
 public sealed class ViewerForm : Form
 {
     private readonly GpuView _view = new() { Dock = DockStyle.Fill, Visible = false };
     private readonly MenuPanel _menu = new();
+    private readonly DisplayController _display = new();
     private ViewerSettings _settings;
     private Screen? _target;
-    private string? _message = "Starting the virtual display…";
-    private bool _busy = true;   // powering the device on/off in the background
-    private Task<string?>? _starting; // enabling the device at startup
+    private string? _message;
     private bool _exiting;
 
-    private readonly FileSystemWatcher _settingsWatcher;
+    private readonly FileSystemWatcher? _settingsWatcher;
     private readonly System.Windows.Forms.Timer _settingsDebounce = new() { Interval = 300 };
     private readonly System.Windows.Forms.Timer _fitDebounce = new() { Interval = 700 };
+
+    // Capture recovery: restart after a failure (e.g. graphics driver reset), but not endlessly.
+    private readonly Queue<DateTime> _failures = new();
+    private string? _captureBroken;
 
     private const int HK_MENU = 1;
     private const uint ID_MENU = 0x10; // system menu command IDs keep the low four bits clear
 
     public ViewerForm()
     {
+        // Sizes below are at 96 dpi; Windows Forms scales them for the screen, and again when the
+        // window moves to a screen with a different scale.
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        AutoScaleMode = AutoScaleMode.Dpi;
         Text = "Virtual Screen";
         Icon = SystemIcons.Application;
         ClientSize = new Size(1280, 720);
         MinimumSize = new Size(320, 200);
         BackColor = Color.Black;
-        ForeColor = Color.Gainsboro;
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw, true);
         Controls.Add(_view);
         Controls.Add(_menu); // docked right; the picture fills the rest
-        _menu.DisplayToggled += ToggleDisplay;
-        _menu.CloseClicked += ToggleMenu;
-        _menu.SettingsChanged += () => { _settings.Save(); RegisterHotkey(); }; // the file watcher applies the display part
-        _view.Resize += (_, _) =>
-        {
-            if (_settings.FitToWindow && WindowState != FormWindowState.Minimized) { _fitDebounce.Stop(); _fitDebounce.Start(); }
-        };
-        _view.CaptureLost += () => BeginInvoke(FindTarget);
 
         _settings = ViewerSettings.Load(out var problem);
         if (problem is not null) Shown += (_, _) => ShowError($"{ViewerSettings.FilePath}:\n{problem}");
-        RestoreBounds_();
 
-        // Editors save in bursts (truncate, write, rename), so wait for the file to settle.
-        _settingsWatcher = new FileSystemWatcher(AppContext.BaseDirectory, Path.GetFileName(ViewerSettings.FilePath))
-        {
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
-            EnableRaisingEvents = true,
-        };
-        FileSystemEventHandler changed = (_, _) =>
-        {
-            if (IsHandleCreated) BeginInvoke(() => { _settingsDebounce.Stop(); _settingsDebounce.Start(); });
-        };
-        _settingsWatcher.Changed += changed;
-        _settingsWatcher.Created += changed;
-        _settingsWatcher.Renamed += (s, e) => changed(s, e);
-        _settingsDebounce.Tick += (_, _) => { _settingsDebounce.Stop(); ReloadSettings(); };
+        _display.Changed += OnDisplayChanged;
+        _menu.DisplayToggled += ToggleDisplay;
+        _menu.CloseClicked += ToggleMenu;
+        _menu.SettingsChanged += () => { _settings.Save(); ApplySettings(); };
+        _view.Resize += (_, _) => { if (_settings.FitToWindow) { _fitDebounce.Stop(); _fitDebounce.Start(); } };
+        _view.CaptureLost += () => BeginInvoke(FindTarget);
+        _view.CaptureFailed += ex => BeginInvoke(() => OnCaptureFailed(ex));
         _fitDebounce.Tick += (_, _) => { _fitDebounce.Stop(); FitResolution(); };
+
+        // Hand edits to the settings file apply when saved. Editors save in bursts, so wait for it to settle.
+        try
+        {
+            _settingsWatcher = new FileSystemWatcher(Path.GetDirectoryName(ViewerSettings.FilePath)!, Path.GetFileName(ViewerSettings.FilePath))
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
+                EnableRaisingEvents = true,
+            };
+            FileSystemEventHandler changed = (_, _) =>
+            {
+                if (IsHandleCreated) BeginInvoke(() => { _settingsDebounce.Stop(); _settingsDebounce.Start(); });
+            };
+            _settingsWatcher.Changed += changed;
+            _settingsWatcher.Created += changed;
+            _settingsWatcher.Renamed += (s, e) => changed(s, e);
+        }
+        catch { } // no folder: the menu still works
+        _settingsDebounce.Tick += (_, _) => { _settingsDebounce.Stop(); ReloadSettings(); };
 
         SystemEvents.DisplaySettingsChanged += OnDisplaysChanged;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
-        Shown += (_, _) => _ = StartDisplayAsync();
+        Shown += (_, _) => _ = _display.TurnOnAsync(_settings);
     }
 
-    // ---------- Bringing the display up and down ----------
+    // ---------- The display ----------
 
-    /// <summary>On start: enable the device if needed (background), then attach the monitor.</summary>
-    private async Task StartDisplayAsync()
+    private void ToggleDisplay()
     {
-        _busy = true;
-        string? device = VirtualDisplay.FindDevice();
-        if (device is null)
-        {
-            if (!await Task.Run(() => VirtualDisplay.CanPowerOff))
-            {
-                _busy = false;
-                SetMessage("The virtual display is switched off in Device Manager.\n\n"
-                    + "Run install-driver.ps1 again so this app can switch it on and off itself.");
-                return;
-            }
-            _starting = Task.Run(VirtualDisplay.PowerOn);
-            device = await _starting;
-        }
-        _busy = false;
+        if (_display.State == DisplayState.On) _ = _display.TurnOffAsync();
+        else if (_display.State == DisplayState.Off) _ = _display.TurnOnAsync(_settings);
+    }
+
+    private void OnDisplayChanged()
+    {
         if (_exiting) return;
-        if (device is null)
-        {
-            SetMessage("No virtual display found.\n\nInstall the Virtual Display Driver (see README).");
-            return;
-        }
-        try
-        {
-            if (!VirtualDisplay.IsOn(device)) VirtualDisplay.TurnOn(device, _settings);
-            else VirtualDisplay.UseSettings(device, _settings);
-        }
-        catch (Exception ex) { ShowError(ex.Message); }
+        if (_display.State == DisplayState.On && _display.Problem is { } problem) ShowError(problem);
+        else if (_display.State == DisplayState.On && _settings.FitToWindow) FitResolution();
         FindTarget();
     }
-
-    /// <summary>The menu's "Virtual display on" box.</summary>
-    private async void ToggleDisplay()
-    {
-        if (_busy) return;
-        var device = VirtualDisplay.FindDevice();
-        try
-        {
-            if (device is not null && VirtualDisplay.IsOn(device))
-            {
-                VirtualDisplay.TurnOff(device);
-                _busy = true;
-                SetMessage("Switching the virtual display off…");
-                if (await Task.Run(() => VirtualDisplay.CanPowerOff)) await Task.Run(VirtualDisplay.PowerOff);
-            }
-            else
-            {
-                _busy = true;
-                SetMessage("Switching the virtual display on…");
-                device ??= await Task.Run(VirtualDisplay.PowerOn);
-                if (device is null) ShowError("Couldn't switch the virtual display on. Run install-driver.ps1 again.");
-                else VirtualDisplay.TurnOn(device, _settings);
-            }
-        }
-        catch (Exception ex) { ShowError(ex.Message); }
-        finally { _busy = false; FindTarget(); }
-    }
-
-    /// <summary>
-    /// On exit the virtual display always goes fully off: disconnected, then the device disabled, so
-    /// Windows sees no extra monitor or adapter until the app opens again.
-    /// </summary>
-    private void ShutDownDisplay()
-    {
-        // If it's still coming up, let that finish first, or it could switch back on after we've gone.
-        try { _starting?.Wait(TimeSpan.FromSeconds(20)); } catch { }
-        if (VirtualDisplay.FindDevice() is { } device && VirtualDisplay.IsOn(device))
-            try { VirtualDisplay.TurnOff(device); } catch { }
-        VirtualDisplay.PowerOff();
-    }
-
-    // ---------- Which display to show ----------
 
     private void OnDisplaysChanged(object? s, EventArgs e) { if (IsHandleCreated) BeginInvoke(FindTarget); }
 
     private void FindTarget()
     {
         if (_exiting) return;
-        var device = VirtualDisplay.FindDevice();
+        _captureBroken = null; // the displays changed: worth trying again
+        var device = _display.State == DisplayState.On ? VirtualDisplay.FindDevice() : null;
         _target = device is null ? null : Screen.AllScreens.FirstOrDefault(s => s.DeviceName == device);
         UpdateCapture();
     }
 
     private bool ShowingOwnScreen => _target is not null && _target.DeviceName == Screen.FromControl(this).DeviceName;
 
+    // ---------- Capture ----------
+
     /// <summary>Capture when there's something to show and somewhere to show it; otherwise a message.</summary>
     private void UpdateCapture()
     {
-        string? message = null;
-        if (_busy) message = _message;
-        else if (!GpuView.Supported) message = "Screen capture isn't available on this version of Windows (needs Windows 10 2004 or later).";
-        else if (_target is null) message = "The virtual display is off.\n\nTurn it on in the menu (Ctrl+Alt+S).";
-        else if (ShowingOwnScreen) message = "This window is on the display it's showing.\nMove it to another screen.";
+        string? message = _display.State switch
+        {
+            DisplayState.Starting => "Switching the virtual display on…",
+            DisplayState.Stopping => "Switching the virtual display off…",
+            DisplayState.Off => _display.Problem is { } p
+                ? $"The virtual display is off.\n\n{p}"
+                : "The virtual display is off.\n\nTurn it on in the menu (Ctrl+Alt+S).",
+            _ => null,
+        };
+        if (message is null)
+        {
+            if (!GpuView.Supported) message = "Screen capture isn't available on this version of Windows (needs Windows 10 2004 or later).";
+            else if (_target is null) message = "Waiting for the virtual display…";
+            else if (ShowingOwnScreen) message = "This window is on the display it's showing.\nMove it to another screen.";
+            else if (_captureBroken is not null) message = $"Couldn't show the virtual display: {_captureBroken}";
+        }
 
-        bool capture = message is null && Visible && WindowState != FormWindowState.Minimized;
+        bool capture = message is null && WindowState != FormWindowState.Minimized;
         if (capture)
         {
-            var center = new POINT { X = _target!.Bounds.X + _target.Bounds.Width / 2, Y = _target.Bounds.Y + _target.Bounds.Height / 2 };
-            var monitor = MonitorFromPoint(center, MONITOR_DEFAULTTONULL);
-            if (!_view.IsCapturing || _view.Tag is not IntPtr m || m != monitor)
+            var b = _target!.Bounds;
+            var monitor = MonitorFromPoint(new POINT { X = b.X + b.Width / 2, Y = b.Y + b.Height / 2 }, MONITOR_DEFAULTTONULL);
+            if (!_view.IsCapturing || _view.Monitor != monitor)
             {
-                try { _view.Start(monitor); _view.Tag = monitor; }
-                catch (Exception ex) { message = $"Couldn't capture the virtual display: {ex.Message}"; capture = false; }
+                try { _view.Start(monitor); }
+                catch (Exception ex) { message = $"Couldn't show the virtual display: {ex.Message}"; capture = false; }
             }
         }
         if (!capture) _view.Stop();
@@ -189,35 +150,68 @@ public sealed class ViewerForm : Form
         Invalidate();
     }
 
-    private void SetMessage(string message) { _message = message; _view.Stop(); _view.Visible = false; SyncMenu(); Invalidate(); }
+    private void OnCaptureFailed(Exception ex)
+    {
+        if (_exiting) return;
+        var now = DateTime.UtcNow;
+        _failures.Enqueue(now);
+        while (_failures.Peek() < now.AddSeconds(-30)) _failures.Dequeue();
+        if (_failures.Count >= 3) _captureBroken = ex.Message; // stop retrying until the displays change
+        UpdateCapture(); // starts again with a fresh graphics device
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.Clear(Color.Black);
+        // The picture's area (a hidden control isn't laid out, so its own bounds can't be used).
+        var area = ClientRectangle;
+        if (_menu.Visible) area.Width -= _menu.Width;
         if (_message is not null)
-            TextRenderer.DrawText(e.Graphics, _message, Font, _view.Bounds, Color.Gainsboro,
+            TextRenderer.DrawText(e.Graphics, _message, Font, area, Color.Gainsboro,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
     }
 
-    protected override void OnMove(EventArgs e) { base.OnMove(e); if (IsHandleCreated && !_busy) UpdateCapture(); }
-    protected override void OnResize(EventArgs e) { base.OnResize(e); if (IsHandleCreated && !_busy) UpdateCapture(); }
+    protected override void OnMove(EventArgs e) { base.OnMove(e); if (IsHandleCreated) UpdateCapture(); }
+    protected override void OnResize(EventArgs e) { base.OnResize(e); if (IsHandleCreated) UpdateCapture(); }
 
     // ---------- Fit the display's resolution to the window ----------
 
     private void FitResolution()
     {
-        if (!_settings.FitToWindow || _target is null || _busy) return;
+        if (!_settings.FitToWindow || _target is null || _display.State != DisplayState.On) return;
         var mode = VirtualDisplay.ModeFor(_view.ClientSize, _target.Bounds.Size);
         if (mode is not { } m || (m.Width == _target.Bounds.Width && m.Height == _target.Bounds.Height)) return;
         try { VirtualDisplay.SetResolution(_target.DeviceName, m.Width, m.Height, _settings.RefreshRate); }
         catch (Exception ex) { ShowError(ex.Message); }
     }
 
-    // ---------- Settings menu ----------
+    // ---------- Settings ----------
+
+    /// <summary>Applies the current settings: the menu shortcut, and the display's mode if it's on.</summary>
+    private void ApplySettings()
+    {
+        RegisterHotkey();
+        try { _display.Apply(_settings); }
+        catch (Exception ex) { ShowError(ex.Message); }
+        if (_settings.FitToWindow) FitResolution();
+        SyncMenu();
+    }
+
+    /// <summary>The settings file changed: apply it, unless it's just our own save.</summary>
+    private void ReloadSettings()
+    {
+        if (!ViewerSettings.ChangedElsewhere()) return;
+        var window = _settings.Window;
+        var loaded = ViewerSettings.Load(out var problem);
+        if (problem is not null) { ShowError($"{ViewerSettings.FilePath}:\n{problem}"); return; }
+        loaded.Window ??= window;
+        _settings = loaded;
+        ApplySettings();
+    }
 
     private void SyncMenu()
     {
-        if (_menu.Visible) _menu.Sync(_settings, VirtualDisplay.FindDevice(), _busy);
+        if (_menu.Visible) _menu.Sync(_settings, _display.State, _display.Problem);
     }
 
     /// <summary>Opens or closes the settings menu at the side of the viewer.</summary>
@@ -226,6 +220,7 @@ public sealed class ViewerForm : Form
         if (WindowState == FormWindowState.Minimized) { WindowState = FormWindowState.Normal; _menu.Visible = false; }
         _menu.Visible = !_menu.Visible;
         SyncMenu();
+        Invalidate(); // the message area changed size
         if (_menu.Visible) Activate();
     }
 
@@ -240,7 +235,7 @@ public sealed class ViewerForm : Form
     {
         if (!IsHandleCreated) return;
         UnregisterHotKey(Handle, HK_MENU);
-        // If another app already has the shortcut, the title bar's right-click menu still opens it.
+        // If another app already has the shortcut, the title bar's right-click menu still opens the menu.
         if (ViewerSettings.ParseHotkey(_settings.MenuHotkey) is { } hk)
             RegisterHotKey(Handle, HK_MENU, hk.Mods | MOD_NOREPEAT, (uint)hk.Key);
     }
@@ -256,30 +251,17 @@ public sealed class ViewerForm : Form
         base.WndProc(ref m);
     }
 
-    // ---------- Settings file ----------
+    // ---------- Window position ----------
 
-    private void ReloadSettings()
+    protected override void OnLoad(EventArgs e)
     {
-        var bounds = _settings.Window;
-        _settings = ViewerSettings.Load(out var problem);
-        _settings.Window ??= bounds;
-        if (problem is not null) { ShowError($"{ViewerSettings.FilePath}:\n{problem}"); return; }
-        RegisterHotkey();
-        SyncMenu();
-        if (VirtualDisplay.FindDevice() is not { } device || !VirtualDisplay.IsOn(device)) return;
-        try { VirtualDisplay.UseSettings(device, _settings); }
-        catch (Exception ex) { ShowError(ex.Message); }
-        if (_settings.FitToWindow) FitResolution();
-    }
-
-    private void RestoreBounds_()
-    {
+        base.OnLoad(e); // DPI scaling happens here, so restore the saved (already scaled) bounds after it
         if (_settings.Window is not { Length: >= 4 } w) return;
         var rect = new Rectangle(w[0], w[1], Math.Max(w[2], MinimumSize.Width), Math.Max(w[3], MinimumSize.Height));
-        // Only if the title bar would be on a screen (not the virtual one, which may not exist yet).
+        // Only if the title bar would be on a real screen (not the virtual one, which isn't on yet).
         var titleBar = new Rectangle(rect.X + 40, rect.Y + 8, Math.Max(1, rect.Width - 80), 1);
-        if (!Screen.AllScreens.Any(s => s.DeviceName != VirtualDisplay.FindDevice() && s.WorkingArea.IntersectsWith(titleBar))) return;
-        StartPosition = FormStartPosition.Manual;
+        var virtualDevice = VirtualDisplay.FindDevice();
+        if (!Screen.AllScreens.Any(s => s.DeviceName != virtualDevice && s.WorkingArea.IntersectsWith(titleBar))) return;
         Bounds = rect;
         if (w.Length > 4 && w[4] == 1) WindowState = FormWindowState.Maximized;
     }
@@ -288,7 +270,6 @@ public sealed class ViewerForm : Form
     {
         var b = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
         _settings.Window = new[] { b.X, b.Y, b.Width, b.Height, WindowState == FormWindowState.Maximized ? 1 : 0 };
-        _settingsWatcher.EnableRaisingEvents = false;
         _settings.Save();
     }
 
@@ -305,7 +286,7 @@ public sealed class ViewerForm : Form
     }
 
     private void ShowError(string message) =>
-        MessageBox.Show(this, message, "Virtual display", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        MessageBox.Show(this, message, "Virtual Screen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
     private void OnUserPreferenceChanged(object? s, UserPreferenceChangedEventArgs e)
     {
@@ -314,9 +295,11 @@ public sealed class ViewerForm : Form
 
     private void ApplyTheme()
     {
-        int dark = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-            "AppsUseLightTheme", 1) is 0 ? 1 : 0;
-        DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
+        bool dark = Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "AppsUseLightTheme", 1) is 0;
+        int value = dark ? 1 : 0;
+        DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref value, sizeof(int));
+        _menu.ApplyTheme(dark);
     }
 
     // ---------- Exit ----------
@@ -333,11 +316,11 @@ public sealed class ViewerForm : Form
         SystemEvents.DisplaySettingsChanged -= OnDisplaysChanged;
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         UnregisterHotKey(Handle, HK_MENU);
-        _settingsWatcher.Dispose();
+        _settingsWatcher?.Dispose();
         _settingsDebounce.Dispose();
         _fitDebounce.Dispose();
         _view.Stop();
-        ShutDownDisplay();
+        _display.Dispose(); // detaches now; the service disables the device when the connection drops
         base.OnFormClosed(e);
     }
 }

@@ -41,8 +41,15 @@ internal sealed class GpuView : Control
     /// <summary>The captured monitor's size in pixels.</summary>
     public Size SourceSize { get; private set; }
     public bool IsCapturing => _session is not null;
+    /// <summary>The monitor being shown, while capturing.</summary>
+    public IntPtr Monitor { get; private set; }
     /// <summary>Raised (on the capture thread) when capture stops by itself, e.g. the monitor went away.</summary>
     public event Action? CaptureLost;
+    /// <summary>
+    /// Raised (on the capture thread) when drawing a frame fails, e.g. the graphics driver was reset.
+    /// Capture has stopped and the device is released; calling <see cref="Start"/> again recreates it.
+    /// </summary>
+    public event Action<Exception>? CaptureFailed;
 
     public GpuView()
     {
@@ -103,10 +110,15 @@ internal sealed class GpuView : Control
         lock (_lock)
         {
             if (_swapChain is null || ClientSize.Width < 1 || ClientSize.Height < 1) return;
-            _ctx!.Target = null;
-            _target?.Dispose();
-            _swapChain.ResizeBuffers(2, (uint)ClientSize.Width, (uint)ClientSize.Height, Format.B8G8R8A8_UNorm, SwapChainFlags.None);
-            CreateTarget();
+            try
+            {
+                _ctx!.Target = null;
+                _target?.Dispose();
+                _target = null;
+                _swapChain.ResizeBuffers(2, (uint)ClientSize.Width, (uint)ClientSize.Height, Format.B8G8R8A8_UNorm, SwapChainFlags.None);
+                CreateTarget();
+            }
+            catch (Exception ex) { FailLocked(ex); }
         }
     }
 
@@ -131,6 +143,7 @@ internal sealed class GpuView : Control
             // in OBS too). Windows 10 doesn't have the option and keeps the border.
             try { _session.IsBorderRequired = false; } catch { }
             _session.StartCapture();
+            Monitor = hmonitor;
         }
     }
 
@@ -141,15 +154,47 @@ internal sealed class GpuView : Control
             _session?.Dispose(); _session = null;
             if (_pool is not null) { _pool.FrameArrived -= OnFrameArrived; _pool.Dispose(); _pool = null; }
             _item = null;
+            Monitor = IntPtr.Zero;
         }
-        Invalidate();
+        if (IsHandleCreated) BeginInvoke(Invalidate);
+    }
+
+    /// <summary>Stops capture and releases the graphics device (called with the lock held).</summary>
+    private void FailLocked(Exception ex)
+    {
+        _session?.Dispose(); _session = null;
+        if (_pool is not null) { _pool.FrameArrived -= OnFrameArrived; _pool.Dispose(); _pool = null; }
+        _item = null;
+        Monitor = IntPtr.Zero;
+        ReleaseDevice();
+        ThreadPool.QueueUserWorkItem(_ => CaptureFailed?.Invoke(ex)); // outside the lock
+    }
+
+    private void ReleaseDevice()
+    {
+        try { if (_ctx is not null) _ctx.Target = null; } catch { }
+        _target?.Dispose(); _ctx?.Dispose(); _swapChain?.Dispose(); _d2dFactory?.Dispose();
+        (_winrtDevice as IDisposable)?.Dispose(); _dxgiDevice?.Dispose(); _device?.Dispose();
+        _target = null; _ctx = null; _swapChain = null; _d2dFactory = null; _winrtDevice = null; _dxgiDevice = null; _device = null;
     }
 
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
+        // Anything thrown here would end the process (it's a capture thread), so it's caught and
+        // reported instead; the viewer then restarts capture with a fresh device.
         lock (_lock)
         {
             if (_pool is null || _ctx is null || _swapChain is null) return;
+            try { DrawFrame(sender); }
+            catch (Exception ex) { FailLocked(ex); }
+        }
+    }
+
+    private const int DXGI_ERROR_WAS_STILL_DRAWING = unchecked((int)0x887A000A);
+
+    private void DrawFrame(Direct3D11CaptureFramePool sender)
+    {
+        {
             using var frame = sender.TryGetNextFrame();
             if (frame is null) return;
 
@@ -158,7 +203,7 @@ internal sealed class GpuView : Control
             {
                 _poolSize = frame.ContentSize;
                 SourceSize = new Size(_poolSize.Width, _poolSize.Height);
-                _pool.Recreate(_winrtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, _poolSize);
+                _pool!.Recreate(_winrtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, _poolSize);
                 return;
             }
             if (!Visible || ClientSize.Width < 1 || ClientSize.Height < 1) return;
@@ -166,7 +211,7 @@ internal sealed class GpuView : Control
             var access = frame.Surface.As<IDirect3DDxgiInterfaceAccess>();
             var iid = typeof(IDXGISurface).GUID;
             using var surface = new IDXGISurface(access.GetInterface(ref iid));
-            using var bitmap = _ctx.CreateBitmapFromDxgiSurface(surface,
+            using var bitmap = _ctx!.CreateBitmapFromDxgiSurface(surface,
                 new BitmapProperties1(new PixelFormat(Format.B8G8R8A8_UNorm, AlphaMode.Premultiplied)));
 
             var rect = Fit(SourceSize, ClientSize);
@@ -174,8 +219,11 @@ internal sealed class GpuView : Control
             _ctx.Clear(new Color4(0, 0, 0, 1));
             _ctx.DrawBitmap(bitmap, new Vortice.RawRectF(rect.Left, rect.Top, rect.Right, rect.Bottom), 1f,
                 Vortice.Direct2D1.InterpolationMode.Linear, null, null);
-            _ctx.EndDraw();
-            _swapChain.Present(1, PresentFlags.None);
+            _ctx.EndDraw().CheckError();
+            // Don't wait for this window's screen to refresh: if the previous frame is still queued,
+            // skip this one rather than holding up the capture thread.
+            var result = _swapChain!.Present(0, PresentFlags.DoNotWait);
+            if (result.Code != DXGI_ERROR_WAS_STILL_DRAWING) result.CheckError();
         }
     }
 
@@ -198,12 +246,7 @@ internal sealed class GpuView : Control
         if (disposing)
         {
             Stop();
-            lock (_lock)
-            {
-                _target?.Dispose(); _ctx?.Dispose(); _swapChain?.Dispose(); _d2dFactory?.Dispose();
-                (_winrtDevice as IDisposable)?.Dispose(); _dxgiDevice?.Dispose(); _device?.Dispose();
-                _target = null; _ctx = null; _swapChain = null; _device = null;
-            }
+            lock (_lock) ReleaseDevice();
         }
         base.Dispose(disposing);
     }
