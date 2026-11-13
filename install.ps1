@@ -71,6 +71,10 @@ try {
     }
     else {
         if (-not (Test-Path $BuiltExe)) { throw "$BuiltExe not found. Run build.bat first." }
+        # Make sure out\ holds a build of this version of the code, not an older one.
+        $want = ([xml](Get-Content (Join-Path $PSScriptRoot 'VirtualScreenViewer.csproj'))).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+        $have = ((Get-Item $BuiltExe).VersionInfo.ProductVersion -split '\+')[0]
+        if ($want -and $have -ne $want) { throw "out\VirtualScreenViewer.exe is version $have, but this code is $want. Run build.bat first, then this again." }
         $missing = 'MttVDD.inf', 'MttVDD.dll', 'mttvdd.cat', 'Virtual_Display_Driver.cer', 'vdd_settings.xml' |
             Where-Object { -not (Test-Path (Join-Path $DriverDir $_)) }
         if ($missing) { throw "Missing from ${DriverDir}: $($missing -join ', '). Download the driver first (see README)." }
