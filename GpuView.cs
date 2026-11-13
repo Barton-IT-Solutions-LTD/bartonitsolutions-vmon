@@ -38,12 +38,8 @@ internal sealed class GpuView : Control
     private GraphicsCaptureSession? _session;
     private Windows.Graphics.SizeInt32 _poolSize;
 
-    /// <summary>Where the picture was last drawn, in this control's pixels (for control mode).</summary>
-    public Rectangle PictureRect { get; private set; }
     /// <summary>The captured monitor's size in pixels.</summary>
     public Size SourceSize { get; private set; }
-    /// <summary>Draw an orange frame round the picture (control mode is on).</summary>
-    public bool Highlight { get; set; }
     public bool IsCapturing => _session is not null;
     /// <summary>Raised (on the capture thread) when capture stops by itself, e.g. the monitor went away.</summary>
     public event Action? CaptureLost;
@@ -174,16 +170,10 @@ internal sealed class GpuView : Control
                 new BitmapProperties1(new PixelFormat(Format.B8G8R8A8_UNorm, AlphaMode.Premultiplied)));
 
             var rect = Fit(SourceSize, ClientSize);
-            PictureRect = rect;
             _ctx.BeginDraw();
             _ctx.Clear(new Color4(0, 0, 0, 1));
             _ctx.DrawBitmap(bitmap, new Vortice.RawRectF(rect.Left, rect.Top, rect.Right, rect.Bottom), 1f,
                 Vortice.Direct2D1.InterpolationMode.Linear, null, null);
-            if (Highlight)
-            {
-                using var brush = _ctx.CreateSolidColorBrush(new Color4(1f, 0.55f, 0f, 1f));
-                _ctx.DrawRectangle(new Vortice.RawRectF(rect.Left + 1.5f, rect.Top + 1.5f, rect.Right - 1.5f, rect.Bottom - 1.5f), brush, 3f);
-            }
             _ctx.EndDraw();
             _swapChain.Present(1, PresentFlags.None);
         }

@@ -21,28 +21,23 @@ The finished app is `out\VirtualScreenViewer.exe`. It needs Windows 10 2004 or l
 
 ## 3. Use it
 
-Run `out\VirtualScreenViewer.exe`. It's a window showing the virtual display live, like a monitor in a window, plus a tray icon. Resize the window however you like and the picture scales to fit.
+Run `out\VirtualScreenViewer.exe`. It's a window showing the virtual display live, like a monitor in a window. Resize it however you like and the picture scales to fit. Move apps onto the virtual display with Win + Shift + arrow keys, or by dragging them past the edge of your screen.
 
-- **Fully off when you're not using it.** If the virtual display is off when the app opens, the app enables the device, attaches the monitor, and on exit detaches it and disables the device again, as if you'd disabled it in Device Manager. Windows then sees no extra monitor and no extra adapter.
-- **Tray icon**: left-click shows or hides the viewer. Right-click for:
-  - **Virtual display on**: switch it on or off yourself. Once you do, the app leaves it as you set it when it exits.
-  - **Control mode**: clicks and scrolling in the window go to the virtual display (an orange frame shows it's on). Clicking a window there makes it active, so typing goes to it too.
-  - **Fit resolution to window**: when you resize the viewer, the virtual display switches to the driver's resolution closest to the window's shape, so there are no black bars.
-  - **Move active window to/from the display**: sends the window you last used onto the virtual display, or back to the screen the viewer is on.
-  - **Settings…** (opens the menu below) and **Exit**. Closing the window also exits.
-- **Menu** (`Ctrl+Alt+S`, or **Settings…** in the tray): a small panel at the side of the viewer with everything in one place. Switch the display on or off, pick its resolution and refresh rate (only the ones the driver offers), fit-to-window, control mode, move a window, change the hotkeys, or open Windows' display settings. Changes apply straight away. Press the shortcut again or ✕ to close it.
-- **Hotkeys** (change them in the menu):
-  - `Ctrl+Alt+S`: open or close the menu.
-  - `Ctrl+Alt+V`: show or hide the viewer.
-  - `Ctrl+Alt+Shift+M`: move the active window to or from the virtual display.
-  - `Ctrl+Alt+C`: control mode on or off.
+- **Fully off when you're not using it.** If the virtual display is off when the app opens, the app enables the device and connects the display; on exit it disconnects it and disables the device again, as if you'd disabled it in Device Manager. Windows then sees no extra monitor and no extra adapter.
+- **Menu**: press `Ctrl+Alt+S`, or right-click the title bar → **Settings menu**. A small panel opens at the side of the viewer where you can:
+  - switch the virtual display on or off (once you do, the app leaves it as you set it when it exits);
+  - pick its resolution and refresh rate (only the ones the driver offers);
+  - turn on **Fit resolution to window**: when you resize the viewer, the display switches to the driver's resolution closest to the window's shape, so there are no black bars;
+  - open Windows' display settings, or change the menu's shortcut.
+
+  Changes apply straight away. Press the shortcut again or ✕ to close it.
 - Only one viewer runs at a time; opening it again brings the running one to the front.
 - The window remembers its size and position, and its title bar follows Windows' light/dark app setting.
 - Capture uses Windows Graphics Capture on the graphics card (as OBS does), at the display's full frame rate, with the cursor included.
 
 ## Settings
 
-The menu (`Ctrl+Alt+S`) sets everything. Settings are kept in `VirtualScreenViewer.json` next to the exe (`out\`), which you can also edit by hand; changes apply as soon as it's saved.
+The menu sets everything. Settings are kept in `VirtualScreenViewer.json` next to the exe (`out\`), which you can also edit by hand; changes apply as soon as it's saved.
 
 ```json
 {
@@ -50,16 +45,13 @@ The menu (`Ctrl+Alt+S`) sets everything. Settings are kept in `VirtualScreenView
   "width": 0,
   "height": 0,
   "fitToWindow": false,
-  "menuHotkey": "Ctrl+Alt+S",
-  "showHideHotkey": "Ctrl+Alt+V",
-  "moveWindowHotkey": "Ctrl+Alt+Shift+M",
-  "controlHotkey": "Ctrl+Alt+C"
+  "menuHotkey": "Ctrl+Alt+S"
 }
 ```
 
 - `refreshRate`: Hz for the virtual display, e.g. 30, 60, 90, 120, 144 or 165. `0` leaves it as Windows has it.
 - `width` / `height`: its resolution, e.g. `2560` and `1440`. `0` for both keeps the one set in Windows' display settings.
-- Hotkeys need at least one of Ctrl, Alt, Shift or Win. Empty means none.
+- `menuHotkey`: needs at least one of Ctrl, Alt, Shift or Win. Empty means none (the title bar menu still works).
 
 Only the modes listed in `C:\VirtualDisplayDriver\vdd_settings.xml` work; anything else shows an error and leaves the display as it was. A mistake in the file shows a message and the defaults are used until it's fixed.
 
@@ -72,7 +64,7 @@ Higher refresh rates cost more compositor time. 60 Hz suits OBS at 60 fps; use m
 
 ## Known limits
 
-- Control mode sends clicks and scrolling, not drags: each press is a full click.
+- The viewer is for watching only: use the virtual display through its apps, OBS or Moonlight.
 - Some fullscreen-exclusive games or DRM video show black. Run games in borderless windowed mode.
 - On Windows 10 the virtual display gets a yellow "being captured" border (Windows 11 lets the app turn it off).
 - If the window is on the display it's showing, it'll tell you to move it, to avoid a hall-of-mirrors effect.

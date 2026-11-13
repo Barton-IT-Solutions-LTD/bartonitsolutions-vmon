@@ -6,7 +6,7 @@ namespace VirtualScreenViewer;
 /// </summary>
 internal sealed class MenuPanel : Panel
 {
-    public event Action? DisplayToggled, ControlToggled, MoveWindowClicked, SettingsChanged, CloseClicked;
+    public event Action? DisplayToggled, SettingsChanged, CloseClicked;
 
     private static readonly Color Back = Color.FromArgb(32, 32, 32), Fore = Color.Gainsboro, Dim = Color.Gray, Field = Color.FromArgb(48, 48, 48);
 
@@ -14,9 +14,7 @@ internal sealed class MenuPanel : Panel
     private readonly CheckBox _on = Check("Virtual display on");
     private readonly ComboBox _resolution = Combo(), _refresh = Combo();
     private readonly CheckBox _fit = Check("Fit resolution to window");
-    private readonly CheckBox _control = Check("Control mode (clicks go to it)");
-    private readonly Button _move = Btn("Move last active window to/from it");
-    private readonly TextBox _hkMenu = Hotkey(), _hkShow = Hotkey(), _hkMove = Hotkey(), _hkControl = Hotkey();
+    private readonly TextBox _hkMenu = Hotkey();
     private ViewerSettings _s = new();
     private List<(int Width, int Height, int[] Rates)> _modes = new();
     private bool _syncing;
@@ -56,34 +54,21 @@ internal sealed class MenuPanel : Panel
         winSettings.Click += (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:display") { UseShellExecute = true }); } catch { } };
         flow.Controls.Add(winSettings);
 
-        flow.Controls.Add(Heading("Viewer"));
-        flow.Controls.Add(_control);
-        flow.Controls.Add(_move);
-
-        flow.Controls.Add(Heading("Hotkeys"));
-        foreach (var (label, box) in new[] { ("This menu", _hkMenu), ("Show/hide viewer", _hkShow), ("Move active window", _hkMove), ("Control mode", _hkControl) })
-        {
-            flow.Controls.Add(Caption(label));
-            flow.Controls.Add(box);
-        }
-        flow.Controls.Add(new Label { Text = "Click a box and press the keys.\nBackspace clears it.", AutoSize = true, ForeColor = Dim, Margin = new Padding(0, 4, 0, 0) });
+        flow.Controls.Add(Heading("Shortcut for this menu"));
+        flow.Controls.Add(_hkMenu);
+        flow.Controls.Add(new Label { Text = "Click the box and press the keys.\nThe title bar's right-click menu\nopens it too.", AutoSize = true, ForeColor = Dim, Margin = new Padding(0, 4, 0, 0) });
         Controls.Add(flow);
 
         _on.CheckedChanged += (_, _) => { if (!_syncing) DisplayToggled?.Invoke(); };
-        _control.CheckedChanged += (_, _) => { if (!_syncing) ControlToggled?.Invoke(); };
-        _move.Click += (_, _) => MoveWindowClicked?.Invoke();
         _resolution.SelectedIndexChanged += (_, _) => Changed();
         _refresh.SelectedIndexChanged += (_, _) => Changed();
         _fit.CheckedChanged += (_, _) => Changed();
-        foreach (var box in new[] { _hkMenu, _hkShow, _hkMove, _hkControl })
-        {
-            box.KeyDown += CaptureHotkey;
-            box.TextChanged += (_, _) => Changed();
-        }
+        _hkMenu.KeyDown += CaptureHotkey;
+        _hkMenu.TextChanged += (_, _) => Changed();
     }
 
     /// <summary>Shows the current state. Called whenever settings or the display change.</summary>
-    public void Sync(ViewerSettings s, string? device, bool busy, bool control)
+    public void Sync(ViewerSettings s, string? device, bool busy)
     {
         _s = s;
         _syncing = true;
@@ -101,12 +86,7 @@ internal sealed class MenuPanel : Panel
             Fill(_refresh, "Leave as Windows has it", rates, s.RefreshRate > 0 ? $"{s.RefreshRate} Hz" : null);
             _resolution.Enabled = !s.FitToWindow; // fit-to-window picks it
             _fit.Checked = s.FitToWindow;
-            _control.Checked = control;
-            _move.Enabled = attached;
             SetIfIdle(_hkMenu, s.MenuHotkey);
-            SetIfIdle(_hkShow, s.ShowHideHotkey);
-            SetIfIdle(_hkMove, s.MoveWindowHotkey);
-            SetIfIdle(_hkControl, s.ControlHotkey);
         }
         finally { _syncing = false; }
     }
@@ -125,9 +105,6 @@ internal sealed class MenuPanel : Panel
         _s.FitToWindow = _fit.Checked;
         _resolution.Enabled = !_s.FitToWindow;
         _s.MenuHotkey = _hkMenu.Text;
-        _s.ShowHideHotkey = _hkShow.Text;
-        _s.MoveWindowHotkey = _hkMove.Text;
-        _s.ControlHotkey = _hkControl.Text;
         SettingsChanged?.Invoke();
     }
 

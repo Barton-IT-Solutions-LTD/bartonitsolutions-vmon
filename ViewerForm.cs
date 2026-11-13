@@ -4,15 +4,14 @@ using static VirtualScreenViewer.Native;
 namespace VirtualScreenViewer;
 
 /// <summary>
-/// A window that shows the virtual display live, like a monitor in a window, with a tray icon and
-/// global hotkeys. If the virtual display was off when the app started, the app brings it all the
-/// way up (device enabled, monitor attached) and takes it all the way down again on exit, so it
-/// costs nothing while the app isn't running.
+/// A window that shows the virtual display live, like a monitor in a window, with a small settings
+/// menu (Ctrl+Alt+S, or the title bar's right-click menu). If the virtual display was off when the
+/// app started, the app brings it all the way up (device enabled, monitor attached) and takes it all
+/// the way down again on exit, so it costs nothing while the app isn't running.
 /// </summary>
 public sealed class ViewerForm : Form
 {
     private readonly GpuView _view = new() { Dock = DockStyle.Fill, Visible = false };
-    private readonly NotifyIcon _tray = new();
     private readonly MenuPanel _menu = new();
     private ViewerSettings _settings;
     private Screen? _target;
@@ -20,16 +19,14 @@ public sealed class ViewerForm : Form
     private bool _busy = true;   // powering the device on/off in the background
     private bool _poweredOn;     // we enabled the device, so disable it again on exit
     private bool _attached;      // we attached the monitor, so detach it again on exit
-    private bool _control;       // control mode: clicks in the window go to the virtual display
     private bool _exiting;
-    private IntPtr _lastOtherWindow; // the last foreground window that wasn't ours (for "move window" from the tray)
 
     private readonly FileSystemWatcher _settingsWatcher;
     private readonly System.Windows.Forms.Timer _settingsDebounce = new() { Interval = 300 };
     private readonly System.Windows.Forms.Timer _fitDebounce = new() { Interval = 700 };
-    private readonly System.Windows.Forms.Timer _foreground = new() { Interval = 400 };
 
-    private const int HK_SHOW = 1, HK_MOVE = 2, HK_CONTROL = 3, HK_MENU = 4;
+    private const int HK_MENU = 1;
+    private const uint ID_MENU = 0x10; // system menu command IDs keep the low four bits clear
 
     public ViewerForm()
     {
@@ -44,24 +41,17 @@ public sealed class ViewerForm : Form
         Controls.Add(_view);
         Controls.Add(_menu); // docked right; the picture fills the rest
         _menu.DisplayToggled += ToggleDisplay;
-        _menu.ControlToggled += () => SetControl(!_control);
-        _menu.MoveWindowClicked += () => MoveWindow(_lastOtherWindow);
-        _menu.CloseClicked += () => ToggleMenu();
-        _menu.SettingsChanged += () => { _settings.Save(); RegisterHotkeys(); }; // the file watcher applies the display part
+        _menu.CloseClicked += ToggleMenu;
+        _menu.SettingsChanged += () => { _settings.Save(); RegisterHotkey(); }; // the file watcher applies the display part
         _view.Resize += (_, _) =>
         {
             if (_settings.FitToWindow && WindowState != FormWindowState.Minimized) { _fitDebounce.Stop(); _fitDebounce.Start(); }
         };
+        _view.CaptureLost += () => BeginInvoke(FindTarget);
 
         _settings = ViewerSettings.Load(out var problem);
         if (problem is not null) Shown += (_, _) => ShowError($"{ViewerSettings.FilePath}:\n{problem}");
         RestoreBounds_();
-
-        _view.CaptureLost += () => BeginInvoke(FindTarget);
-        _view.MouseDown += OnViewMouseDown;
-        _view.MouseWheel += OnViewMouseWheel;
-
-        BuildTray();
 
         // Editors save in bursts (truncate, write, rename), so wait for the file to settle.
         _settingsWatcher = new FileSystemWatcher(AppContext.BaseDirectory, Path.GetFileName(ViewerSettings.FilePath))
@@ -78,12 +68,6 @@ public sealed class ViewerForm : Form
         _settingsWatcher.Renamed += (s, e) => changed(s, e);
         _settingsDebounce.Tick += (_, _) => { _settingsDebounce.Stop(); ReloadSettings(); };
         _fitDebounce.Tick += (_, _) => { _fitDebounce.Stop(); FitResolution(); };
-        _foreground.Tick += (_, _) =>
-        {
-            var fg = GetForegroundWindow();
-            if (fg != IntPtr.Zero && fg != Handle && !IsOurs(fg)) _lastOtherWindow = fg;
-        };
-        _foreground.Start();
 
         SystemEvents.DisplaySettingsChanged += OnDisplaysChanged;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
@@ -124,7 +108,7 @@ public sealed class ViewerForm : Form
         FindTarget();
     }
 
-    /// <summary>The tray's "Virtual display on" item: the user's choice from now on, kept on exit.</summary>
+    /// <summary>The menu's "Virtual display on" box: the user's choice from now on, kept on exit.</summary>
     private async void ToggleDisplay()
     {
         if (_busy) return;
@@ -180,10 +164,7 @@ public sealed class ViewerForm : Form
         string? message = null;
         if (_busy) message = _message;
         else if (!GpuView.Supported) message = "Screen capture isn't available on this version of Windows (needs Windows 10 2004 or later).";
-        else if (_target is null)
-            message = VirtualDisplay.FindDevice() is null
-                ? "The virtual display is off.\n\nTurn it on from the tray icon."
-                : "The virtual display is disconnected.\n\nTurn it on from the tray icon.";
+        else if (_target is null) message = "The virtual display is off.\n\nTurn it on in the menu (Ctrl+Alt+S).";
         else if (ShowingOwnScreen) message = "This window is on the display it's showing.\nMove it to another screen.";
 
         bool capture = message is null && Visible && WindowState != FormWindowState.Minimized;
@@ -204,20 +185,6 @@ public sealed class ViewerForm : Form
         Invalidate();
     }
 
-    private void SyncMenu()
-    {
-        if (_menu.Visible) _menu.Sync(_settings, VirtualDisplay.FindDevice(), _busy, _control);
-    }
-
-    /// <summary>Opens or closes the settings menu at the side of the viewer (showing the viewer if it's hidden).</summary>
-    private void ToggleMenu()
-    {
-        if (!Visible || WindowState == FormWindowState.Minimized) { ToggleShown(); _menu.Visible = false; }
-        _menu.Visible = !_menu.Visible;
-        SyncMenu();
-        if (_menu.Visible) Activate();
-    }
-
     private void SetMessage(string message) { _message = message; _view.Stop(); _view.Visible = false; SyncMenu(); Invalidate(); }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -229,15 +196,7 @@ public sealed class ViewerForm : Form
     }
 
     protected override void OnMove(EventArgs e) { base.OnMove(e); if (IsHandleCreated && !_busy) UpdateCapture(); }
-
-    protected override void OnResize(EventArgs e)
-    {
-        base.OnResize(e);
-        if (!IsHandleCreated) return;
-        if (!_busy) UpdateCapture();
-    }
-
-    protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); if (IsHandleCreated && !_busy) UpdateCapture(); }
+    protected override void OnResize(EventArgs e) { base.OnResize(e); if (IsHandleCreated && !_busy) UpdateCapture(); }
 
     // ---------- Fit the display's resolution to the window ----------
 
@@ -250,185 +209,50 @@ public sealed class ViewerForm : Form
         catch (Exception ex) { ShowError(ex.Message); }
     }
 
-    // ---------- Control mode: clicks and scrolling go to the virtual display ----------
+    // ---------- Settings menu ----------
 
-    private void SetControl(bool on)
+    private void SyncMenu()
     {
-        _control = on;
-        _view.Highlight = on;
-        _view.Cursor = on ? Cursors.Hand : Cursors.Default;
-        Text = on ? "Virtual Screen — control mode (clicks go to the display)" : "Virtual Screen";
-        _trayControl.Checked = on;
+        if (_menu.Visible) _menu.Sync(_settings, VirtualDisplay.FindDevice(), _busy);
+    }
+
+    /// <summary>Opens or closes the settings menu at the side of the viewer.</summary>
+    private void ToggleMenu()
+    {
+        if (WindowState == FormWindowState.Minimized) { WindowState = FormWindowState.Normal; _menu.Visible = false; }
+        _menu.Visible = !_menu.Visible;
         SyncMenu();
+        if (_menu.Visible) Activate();
     }
 
-    /// <summary>Where a point in the window lands on the virtual display, or null if it's in the black bars.</summary>
-    private POINT? ToDisplay(Point p)
-    {
-        var rect = _view.PictureRect;
-        if (_target is null || rect.Width < 1 || !rect.Contains(p)) return null;
-        var b = _target.Bounds;
-        return new POINT
-        {
-            X = b.X + (int)((p.X - rect.X) * (double)b.Width / rect.Width),
-            Y = b.Y + (int)((p.Y - rect.Y) * (double)b.Height / rect.Height),
-        };
-    }
-
-    private void OnViewMouseDown(object? s, MouseEventArgs e)
-    {
-        if (!_control || ToDisplay(e.Location) is not { } at) return;
-        (uint down, uint up) = e.Button switch
-        {
-            MouseButtons.Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
-            MouseButtons.Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
-            _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
-        };
-        _view.Capture = false; // let the real button-up go where the click went
-        SendAt(at, Mouse(down), Mouse(up));
-    }
-
-    private void OnViewMouseWheel(object? s, MouseEventArgs e)
-    {
-        if (!_control || ToDisplay(e.Location) is not { } at) return;
-        var wheel = Mouse(MOUSEEVENTF_WHEEL);
-        wheel.mi.mouseData = e.Delta;
-        SendAt(at, wheel);
-    }
-
-    private static INPUT Mouse(uint flags) => new() { type = INPUT_MOUSE, mi = new MOUSEINPUT { dwFlags = flags } };
-
-    /// <summary>Jumps the cursor to <paramref name="at"/>, sends the input there, and puts the cursor back.</summary>
-    private static void SendAt(POINT at, params INPUT[] inputs)
-    {
-        GetCursorPos(out var back);
-        SetCursorPos(at.X, at.Y);
-        SendInput((uint)inputs.Length, inputs, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
-        // SendInput only queues the input; give it a moment to be delivered at the new position.
-        Thread.Sleep(15);
-        SetCursorPos(back.X, back.Y);
-    }
-
-    // ---------- Move a window to or from the virtual display ----------
-
-    private bool IsOurs(IntPtr hwnd) => hwnd == Handle || OwnedForms.Any(f => f.IsHandleCreated && f.Handle == hwnd);
-
-    /// <summary>Moves a window onto the virtual display, or back to the screen this viewer is on.</summary>
-    private void MoveWindow(IntPtr hwnd)
-    {
-        hwnd = hwnd == IntPtr.Zero ? IntPtr.Zero : GetAncestor(hwnd, 2 /* GA_ROOT */);
-        if (hwnd == IntPtr.Zero || IsOurs(hwnd) || !IsWindowVisible(hwnd) || _target is null) return;
-        if (!GetWindowRect(hwnd, out var r)) return;
-        var rect = Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
-        var from = Screen.FromRectangle(rect);
-        var to = from.DeviceName == _target.DeviceName ? Screen.FromControl(this) : _target;
-        if (to.DeviceName == from.DeviceName) return;
-
-        bool maximized = IsZoomed(hwnd);
-        if (maximized) { ShowWindow(hwnd, SW_RESTORE); GetWindowRect(hwnd, out r); rect = Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom); }
-
-        // Same place relative to the screen's working area, shrunk to fit if it's bigger.
-        var a = from.WorkingArea; var bArea = to.WorkingArea;
-        int w = Math.Min(rect.Width, bArea.Width), h = Math.Min(rect.Height, bArea.Height);
-        double fx = a.Width > rect.Width ? (rect.X - a.X) / (double)(a.Width - rect.Width) : 0;
-        double fy = a.Height > rect.Height ? (rect.Y - a.Y) / (double)(a.Height - rect.Height) : 0;
-        int x = bArea.X + (int)(Math.Clamp(fx, 0, 1) * (bArea.Width - w));
-        int y = bArea.Y + (int)(Math.Clamp(fy, 0, 1) * (bArea.Height - h));
-        SetWindowPos(hwnd, IntPtr.Zero, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
-        if (maximized) ShowWindow(hwnd, SW_MAXIMIZE);
-    }
-
-    // ---------- Tray icon ----------
-
-    private readonly ToolStripMenuItem _trayShow = new("Show viewer");
-    private readonly ToolStripMenuItem _trayDisplay = new("Virtual display on");
-    private readonly ToolStripMenuItem _trayControl = new("Control mode (clicks go to the display)");
-    private readonly ToolStripMenuItem _trayFit = new("Fit resolution to window");
-    private readonly ToolStripMenuItem _trayMove = new("Move active window to/from the display");
-
-    private void BuildTray()
-    {
-        var menu = new ContextMenuStrip();
-        _trayShow.Font = new Font(_trayShow.Font, FontStyle.Bold);
-        _trayShow.Click += (_, _) => ToggleShown();
-        _trayDisplay.Click += (_, _) => ToggleDisplay();
-        _trayControl.Click += (_, _) => SetControl(!_control);
-        _trayFit.Click += (_, _) => { _settings.FitToWindow = !_settings.FitToWindow; _settings.Save(); if (_settings.FitToWindow) FitResolution(); };
-        _trayMove.Click += (_, _) => MoveWindow(_lastOtherWindow);
-        menu.Items.AddRange(new ToolStripItem[]
-        {
-            _trayShow, new ToolStripSeparator(), _trayDisplay, _trayControl, _trayFit, _trayMove, new ToolStripSeparator(),
-            new ToolStripMenuItem("Settings…", null, (_, _) => { if (!_menu.Visible || !Visible) ToggleMenu(); }),
-            new ToolStripMenuItem("Exit", null, (_, _) => Close()),
-        });
-        menu.Opening += (_, _) =>
-        {
-            var device = VirtualDisplay.FindDevice();
-            _trayShow.Text = Visible ? "Hide viewer" : "Show viewer";
-            _trayDisplay.Checked = device is not null && VirtualDisplay.IsOn(device);
-            _trayDisplay.Enabled = !_busy;
-            _trayFit.Checked = _settings.FitToWindow;
-            _trayMove.Enabled = _target is not null;
-            _trayShow.ShortcutKeyDisplayString = _settings.ShowHideHotkey;
-            _trayControl.ShortcutKeyDisplayString = _settings.ControlHotkey;
-            _trayMove.ShortcutKeyDisplayString = _settings.MoveWindowHotkey;
-        };
-        _tray.ContextMenuStrip = menu;
-        _tray.Icon = SystemIcons.Application;
-        _tray.Text = "Virtual Screen";
-        _tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) ToggleShown(); };
-        _tray.Visible = true;
-    }
-
-    /// <summary>Shows the viewer and puts it in front (someone launched the app again).</summary>
+    /// <summary>Puts the viewer in front (someone launched the app again).</summary>
     internal void BringToFront_()
     {
-        if (!Visible || WindowState == FormWindowState.Minimized) ToggleShown();
-        else Activate();
-    }
-
-    private void ToggleShown()
-    {
-        if (Visible && WindowState != FormWindowState.Minimized) { Hide(); return; }
-        Show();
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         Activate();
     }
 
-
-    // ---------- Hotkeys ----------
-
-    private void RegisterHotkeys()
+    private void RegisterHotkey()
     {
         if (!IsHandleCreated) return;
-        var failed = new List<string>();
-        foreach (var (id, text) in new[] { (HK_SHOW, _settings.ShowHideHotkey), (HK_MOVE, _settings.MoveWindowHotkey), (HK_CONTROL, _settings.ControlHotkey), (HK_MENU, _settings.MenuHotkey) })
-        {
-            UnregisterHotKey(Handle, id);
-            if (ViewerSettings.ParseHotkey(text) is not { } hk) continue;
-            if (!RegisterHotKey(Handle, id, hk.Mods | MOD_NOREPEAT, (uint)hk.Key)) failed.Add(text);
-        }
-        if (failed.Count > 0)
-            _tray.ShowBalloonTip(5000, "Virtual Screen", $"Another app already uses {string.Join(", ", failed)}. Pick another in Settings.", ToolTipIcon.Warning);
+        UnregisterHotKey(Handle, HK_MENU);
+        // If another app already has the shortcut, the title bar's right-click menu still opens it.
+        if (ViewerSettings.ParseHotkey(_settings.MenuHotkey) is { } hk)
+            RegisterHotKey(Handle, HK_MENU, hk.Mods | MOD_NOREPEAT, (uint)hk.Key);
     }
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == WM_HOTKEY)
+        if ((m.Msg == WM_HOTKEY && (int)m.WParam == HK_MENU)
+            || (m.Msg == WM_SYSCOMMAND && ((uint)m.WParam & 0xFFF0) == ID_MENU))
         {
-            switch ((int)m.WParam)
-            {
-                case HK_SHOW: ToggleShown(); break;
-                case HK_MOVE: MoveWindow(GetForegroundWindow()); break; // hotkeys leave the foreground window alone
-                case HK_CONTROL: SetControl(!_control); break;
-                case HK_MENU: ToggleMenu(); break;
-            }
+            ToggleMenu();
             return;
         }
         base.WndProc(ref m);
     }
 
-    // ---------- Settings ----------
+    // ---------- Settings file ----------
 
     private void ReloadSettings()
     {
@@ -436,7 +260,7 @@ public sealed class ViewerForm : Form
         _settings = ViewerSettings.Load(out var problem);
         _settings.Window ??= bounds;
         if (problem is not null) { ShowError($"{ViewerSettings.FilePath}:\n{problem}"); return; }
-        RegisterHotkeys();
+        RegisterHotkey();
         SyncMenu();
         if (VirtualDisplay.FindDevice() is not { } device || !VirtualDisplay.IsOn(device)) return;
         try { VirtualDisplay.UseSettings(device, _settings); }
@@ -470,11 +294,14 @@ public sealed class ViewerForm : Form
     {
         base.OnHandleCreated(e);
         ApplyTheme();
-        RegisterHotkeys();
+        RegisterHotkey();
+        var sys = GetSystemMenu(Handle, false);
+        AppendMenuW(sys, MF_SEPARATOR, UIntPtr.Zero, null);
+        AppendMenuW(sys, MF_STRING, ID_MENU, "Settings menu");
     }
 
     private void ShowError(string message) =>
-        MessageBox.Show(Visible ? this : null, message, "Virtual display", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        MessageBox.Show(this, message, "Virtual display", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
     private void OnUserPreferenceChanged(object? s, UserPreferenceChangedEventArgs e)
     {
@@ -501,13 +328,10 @@ public sealed class ViewerForm : Form
     {
         SystemEvents.DisplaySettingsChanged -= OnDisplaysChanged;
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
-        foreach (var id in new[] { HK_SHOW, HK_MOVE, HK_CONTROL, HK_MENU }) UnregisterHotKey(Handle, id);
-        _tray.Visible = false;
-        _tray.Dispose();
+        UnregisterHotKey(Handle, HK_MENU);
         _settingsWatcher.Dispose();
         _settingsDebounce.Dispose();
         _fitDebounce.Dispose();
-        _foreground.Dispose();
         _view.Stop();
         ShutDownDisplay();
         base.OnFormClosed(e);

@@ -14,7 +14,7 @@ internal sealed class ViewerSettings
     public string Help { get; set; } =
         "refreshRate: Hz for the virtual display (0 = leave it as Windows has it). width/height: its resolution "
         + "(0 = keep the one set in Windows' display settings). Only the modes in C:\\VirtualDisplayDriver\\vdd_settings.xml work. "
-        + "fitToWindow: match the display's shape to the window. Hotkeys look like Ctrl+Alt+V (empty = none). Easier: Settings in the tray menu.";
+        + "fitToWindow: match the display's shape to the window. menuHotkey opens the settings menu (e.g. Ctrl+Alt+S; empty = none). Easier: change these in that menu.";
 
     // The driver offers up to 165 Hz, but every extra refresh costs compositor time for a screen
     // nobody's looking at directly, so 60 is the default.
@@ -25,9 +25,6 @@ internal sealed class ViewerSettings
     /// <summary>Change the virtual display's resolution to match the window's shape when it's resized.</summary>
     [JsonPropertyName("fitToWindow")] public bool FitToWindow { get; set; }
     [JsonPropertyName("menuHotkey")] public string MenuHotkey { get; set; } = "Ctrl+Alt+S";
-    [JsonPropertyName("showHideHotkey")] public string ShowHideHotkey { get; set; } = "Ctrl+Alt+V";
-    [JsonPropertyName("moveWindowHotkey")] public string MoveWindowHotkey { get; set; } = "Ctrl+Alt+Shift+M";
-    [JsonPropertyName("controlHotkey")] public string ControlHotkey { get; set; } = "Ctrl+Alt+C";
     /// <summary>Where the viewer window was last: x, y, width, height (physical pixels), and 1 if maximised.</summary>
     [JsonPropertyName("window")] public int[]? Window { get; set; }
 
