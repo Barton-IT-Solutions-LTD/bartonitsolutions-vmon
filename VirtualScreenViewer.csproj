@@ -21,7 +21,7 @@
   <ItemGroup>
     <!-- Direct3D 11, DXGI and Direct2D for drawing captured frames on the GPU. -->
     <PackageReference Include="Vortice.Direct2D1" Version="3.6.2" />
-    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
     <!-- Running as a Windows service (the part that switches the device on and off). -->
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
   </ItemGroup>
