@@ -13,6 +13,7 @@ public sealed class ViewerForm : Form
 {
     private readonly GpuView _view = new() { Dock = DockStyle.Fill, Visible = false };
     private readonly NotifyIcon _tray = new();
+    private readonly MenuPanel _menu = new();
     private ViewerSettings _settings;
     private Screen? _target;
     private string? _message = "Starting the virtual display…";
@@ -28,7 +29,7 @@ public sealed class ViewerForm : Form
     private readonly System.Windows.Forms.Timer _fitDebounce = new() { Interval = 700 };
     private readonly System.Windows.Forms.Timer _foreground = new() { Interval = 400 };
 
-    private const int HK_SHOW = 1, HK_MOVE = 2, HK_CONTROL = 3;
+    private const int HK_SHOW = 1, HK_MOVE = 2, HK_CONTROL = 3, HK_MENU = 4;
 
     public ViewerForm()
     {
@@ -41,6 +42,16 @@ public sealed class ViewerForm : Form
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw, true);
         Controls.Add(_view);
+        Controls.Add(_menu); // docked right; the picture fills the rest
+        _menu.DisplayToggled += ToggleDisplay;
+        _menu.ControlToggled += () => SetControl(!_control);
+        _menu.MoveWindowClicked += () => MoveWindow(_lastOtherWindow);
+        _menu.CloseClicked += () => ToggleMenu();
+        _menu.SettingsChanged += () => { _settings.Save(); RegisterHotkeys(); }; // the file watcher applies the display part
+        _view.Resize += (_, _) =>
+        {
+            if (_settings.FitToWindow && WindowState != FormWindowState.Minimized) { _fitDebounce.Stop(); _fitDebounce.Start(); }
+        };
 
         _settings = ViewerSettings.Load(out var problem);
         if (problem is not null) Shown += (_, _) => ShowError($"{ViewerSettings.FilePath}:\n{problem}");
@@ -189,16 +200,31 @@ public sealed class ViewerForm : Form
         if (!capture) _view.Stop();
         _view.Visible = capture;
         _message = message;
+        SyncMenu();
         Invalidate();
     }
 
-    private void SetMessage(string message) { _message = message; _view.Stop(); _view.Visible = false; Invalidate(); }
+    private void SyncMenu()
+    {
+        if (_menu.Visible) _menu.Sync(_settings, VirtualDisplay.FindDevice(), _busy, _control);
+    }
+
+    /// <summary>Opens or closes the settings menu at the side of the viewer (showing the viewer if it's hidden).</summary>
+    private void ToggleMenu()
+    {
+        if (!Visible || WindowState == FormWindowState.Minimized) { ToggleShown(); _menu.Visible = false; }
+        _menu.Visible = !_menu.Visible;
+        SyncMenu();
+        if (_menu.Visible) Activate();
+    }
+
+    private void SetMessage(string message) { _message = message; _view.Stop(); _view.Visible = false; SyncMenu(); Invalidate(); }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.Clear(Color.Black);
         if (_message is not null)
-            TextRenderer.DrawText(e.Graphics, _message, Font, ClientRectangle, Color.Gainsboro,
+            TextRenderer.DrawText(e.Graphics, _message, Font, _view.Bounds, Color.Gainsboro,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
     }
 
@@ -209,7 +235,6 @@ public sealed class ViewerForm : Form
         base.OnResize(e);
         if (!IsHandleCreated) return;
         if (!_busy) UpdateCapture();
-        if (_settings.FitToWindow && WindowState != FormWindowState.Minimized) { _fitDebounce.Stop(); _fitDebounce.Start(); }
     }
 
     protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); if (IsHandleCreated && !_busy) UpdateCapture(); }
@@ -219,7 +244,7 @@ public sealed class ViewerForm : Form
     private void FitResolution()
     {
         if (!_settings.FitToWindow || _target is null || _busy) return;
-        var mode = VirtualDisplay.ModeFor(ClientSize, _target.Bounds.Size);
+        var mode = VirtualDisplay.ModeFor(_view.ClientSize, _target.Bounds.Size);
         if (mode is not { } m || (m.Width == _target.Bounds.Width && m.Height == _target.Bounds.Height)) return;
         try { VirtualDisplay.SetResolution(_target.DeviceName, m.Width, m.Height, _settings.RefreshRate); }
         catch (Exception ex) { ShowError(ex.Message); }
@@ -234,6 +259,7 @@ public sealed class ViewerForm : Form
         _view.Cursor = on ? Cursors.Hand : Cursors.Default;
         Text = on ? "Virtual Screen — control mode (clicks go to the display)" : "Virtual Screen";
         _trayControl.Checked = on;
+        SyncMenu();
     }
 
     /// <summary>Where a point in the window lands on the virtual display, or null if it's in the black bars.</summary>
@@ -332,7 +358,7 @@ public sealed class ViewerForm : Form
         menu.Items.AddRange(new ToolStripItem[]
         {
             _trayShow, new ToolStripSeparator(), _trayDisplay, _trayControl, _trayFit, _trayMove, new ToolStripSeparator(),
-            new ToolStripMenuItem("Settings…", null, (_, _) => OpenSettings()),
+            new ToolStripMenuItem("Settings…", null, (_, _) => { if (!_menu.Visible || !Visible) ToggleMenu(); }),
             new ToolStripMenuItem("Exit", null, (_, _) => Close()),
         });
         menu.Opening += (_, _) =>
@@ -354,6 +380,13 @@ public sealed class ViewerForm : Form
         _tray.Visible = true;
     }
 
+    /// <summary>Shows the viewer and puts it in front (someone launched the app again).</summary>
+    internal void BringToFront_()
+    {
+        if (!Visible || WindowState == FormWindowState.Minimized) ToggleShown();
+        else Activate();
+    }
+
     private void ToggleShown()
     {
         if (Visible && WindowState != FormWindowState.Minimized) { Hide(); return; }
@@ -362,13 +395,6 @@ public sealed class ViewerForm : Form
         Activate();
     }
 
-    private void OpenSettings()
-    {
-        using var dlg = new SettingsForm(_settings);
-        if (dlg.ShowDialog(Visible ? this : null) != DialogResult.OK) return;
-        _settings.Save();          // the file watcher applies it
-        RegisterHotkeys();
-    }
 
     // ---------- Hotkeys ----------
 
@@ -376,7 +402,7 @@ public sealed class ViewerForm : Form
     {
         if (!IsHandleCreated) return;
         var failed = new List<string>();
-        foreach (var (id, text) in new[] { (HK_SHOW, _settings.ShowHideHotkey), (HK_MOVE, _settings.MoveWindowHotkey), (HK_CONTROL, _settings.ControlHotkey) })
+        foreach (var (id, text) in new[] { (HK_SHOW, _settings.ShowHideHotkey), (HK_MOVE, _settings.MoveWindowHotkey), (HK_CONTROL, _settings.ControlHotkey), (HK_MENU, _settings.MenuHotkey) })
         {
             UnregisterHotKey(Handle, id);
             if (ViewerSettings.ParseHotkey(text) is not { } hk) continue;
@@ -395,6 +421,7 @@ public sealed class ViewerForm : Form
                 case HK_SHOW: ToggleShown(); break;
                 case HK_MOVE: MoveWindow(GetForegroundWindow()); break; // hotkeys leave the foreground window alone
                 case HK_CONTROL: SetControl(!_control); break;
+                case HK_MENU: ToggleMenu(); break;
             }
             return;
         }
@@ -410,6 +437,7 @@ public sealed class ViewerForm : Form
         _settings.Window ??= bounds;
         if (problem is not null) { ShowError($"{ViewerSettings.FilePath}:\n{problem}"); return; }
         RegisterHotkeys();
+        SyncMenu();
         if (VirtualDisplay.FindDevice() is not { } device || !VirtualDisplay.IsOn(device)) return;
         try { VirtualDisplay.UseSettings(device, _settings); }
         catch (Exception ex) { ShowError(ex.Message); }
@@ -473,7 +501,7 @@ public sealed class ViewerForm : Form
     {
         SystemEvents.DisplaySettingsChanged -= OnDisplaysChanged;
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
-        foreach (var id in new[] { HK_SHOW, HK_MOVE, HK_CONTROL }) UnregisterHotKey(Handle, id);
+        foreach (var id in new[] { HK_SHOW, HK_MOVE, HK_CONTROL, HK_MENU }) UnregisterHotKey(Handle, id);
         _tray.Visible = false;
         _tray.Dispose();
         _settingsWatcher.Dispose();

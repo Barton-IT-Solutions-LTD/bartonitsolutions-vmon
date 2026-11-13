@@ -103,6 +103,13 @@ internal static class VirtualDisplay
         Apply(device, dm);
     }
 
+    /// <summary>The attached monitor's current resolution and refresh rate.</summary>
+    public static (int Width, int Height, int Hz)? Current(string device)
+    {
+        var dm = NewDevMode();
+        return EnumDisplaySettingsW(device, ENUM_CURRENT_SETTINGS, ref dm) ? (dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayFrequency) : null;
+    }
+
     // ---------- Attach (on or off the desktop) ----------
 
     /// <summary>The \\.\DISPLAYn name of the driver's monitor, whether it's attached or not.</summary>

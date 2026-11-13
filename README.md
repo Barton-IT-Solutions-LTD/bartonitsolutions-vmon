@@ -29,17 +29,20 @@ Run `out\VirtualScreenViewer.exe`. It's a window showing the virtual display liv
   - **Control mode**: clicks and scrolling in the window go to the virtual display (an orange frame shows it's on). Clicking a window there makes it active, so typing goes to it too.
   - **Fit resolution to window**: when you resize the viewer, the virtual display switches to the driver's resolution closest to the window's shape, so there are no black bars.
   - **Move active window to/from the display**: sends the window you last used onto the virtual display, or back to the screen the viewer is on.
-  - **Settings…** and **Exit**. Closing the window also exits.
-- **Hotkeys** (change them in Settings):
+  - **Settings…** (opens the menu below) and **Exit**. Closing the window also exits.
+- **Menu** (`Ctrl+Alt+S`, or **Settings…** in the tray): a small panel at the side of the viewer with everything in one place. Switch the display on or off, pick its resolution and refresh rate (only the ones the driver offers), fit-to-window, control mode, move a window, change the hotkeys, or open Windows' display settings. Changes apply straight away. Press the shortcut again or ✕ to close it.
+- **Hotkeys** (change them in the menu):
+  - `Ctrl+Alt+S`: open or close the menu.
   - `Ctrl+Alt+V`: show or hide the viewer.
   - `Ctrl+Alt+Shift+M`: move the active window to or from the virtual display.
   - `Ctrl+Alt+C`: control mode on or off.
+- Only one viewer runs at a time; opening it again brings the running one to the front.
 - The window remembers its size and position, and its title bar follows Windows' light/dark app setting.
 - Capture uses Windows Graphics Capture on the graphics card (as OBS does), at the display's full frame rate, with the cursor included.
 
 ## Settings
 
-**Settings…** in the tray menu offers the resolutions and refresh rates the driver supports, fit-to-window, and the hotkeys. They're kept in `VirtualScreenViewer.json` next to the exe (`out\`), which you can also edit by hand; changes apply as soon as it's saved.
+The menu (`Ctrl+Alt+S`) sets everything. Settings are kept in `VirtualScreenViewer.json` next to the exe (`out\`), which you can also edit by hand; changes apply as soon as it's saved.
 
 ```json
 {
@@ -47,6 +50,7 @@ Run `out\VirtualScreenViewer.exe`. It's a window showing the virtual display liv
   "width": 0,
   "height": 0,
   "fitToWindow": false,
+  "menuHotkey": "Ctrl+Alt+S",
   "showHideHotkey": "Ctrl+Alt+V",
   "moveWindowHotkey": "Ctrl+Alt+Shift+M",
   "controlHotkey": "Ctrl+Alt+C"

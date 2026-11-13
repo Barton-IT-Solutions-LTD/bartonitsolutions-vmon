@@ -24,6 +24,7 @@ internal sealed class ViewerSettings
 
     /// <summary>Change the virtual display's resolution to match the window's shape when it's resized.</summary>
     [JsonPropertyName("fitToWindow")] public bool FitToWindow { get; set; }
+    [JsonPropertyName("menuHotkey")] public string MenuHotkey { get; set; } = "Ctrl+Alt+S";
     [JsonPropertyName("showHideHotkey")] public string ShowHideHotkey { get; set; } = "Ctrl+Alt+V";
     [JsonPropertyName("moveWindowHotkey")] public string MoveWindowHotkey { get; set; } = "Ctrl+Alt+Shift+M";
     [JsonPropertyName("controlHotkey")] public string ControlHotkey { get; set; } = "Ctrl+Alt+C";
