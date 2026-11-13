@@ -17,7 +17,7 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Publish
         run: dotnet publish VirtualScreenViewer.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: VirtualScreenViewer
           path: out/VirtualScreenViewer.exe
